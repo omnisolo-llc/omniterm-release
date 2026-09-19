@@ -126,6 +126,8 @@ class BootstrapExecutionTests(unittest.TestCase):
         for fail in (False, True):
             with self.subTest(fail=fail), tempfile.TemporaryDirectory() as temp:
                 env = BootstrapTests().env()
+                # Windows Python needs the OS root even in a synthetic environment.
+                env.update({key: os.environ[key] for key in ('SystemRoot', 'SYSTEMROOT', 'SystemDrive') if key in os.environ})
                 env.update(GITHUB_ACTIONS='true', GITHUB_EVENT_NAME='workflow_dispatch',
                            GITHUB_REF='refs/heads/main', GITHUB_SHA='b' * 40, RUNNER_TEMP=temp)
                 output = io.StringIO()
@@ -141,7 +143,7 @@ class BootstrapExecutionTests(unittest.TestCase):
                     elif args[0] == sys.executable:
                         original_invoke(args, cwd, child_env, log, timeout)
                 with patch.dict(b.os.environ, env, clear=True), patch.object(b, 'ssh_executable', return_value='ssh'), patch.object(b, 'invoke', side_effect=invoke), contextlib.redirect_stdout(output):
-                    self.assertEqual(b.main(), 1 if fail else 0)
+                    self.assertEqual(b.main(), 1 if fail else 0, output.getvalue())
                 self.assertNotIn('private fixture output', output.getvalue())
                 self.assertNotIn('example/source', output.getvalue())
                 self.assertEqual(list(Path(temp).iterdir()), [])

@@ -115,7 +115,8 @@ def main():
         return 1
     os.umask(0o077)
     with tempfile.TemporaryDirectory(prefix='private-task-', dir=required(env, 'RUNNER_TEMP')) as temp:
-        root = Path(temp)
+        # Resolve Windows short-name aliases before checking containment.
+        root = Path(temp).resolve()
         key, hosts = root / 'identity', root / 'known_hosts'
         key.write_text(env.pop('SOURCE_DEPLOY_KEY').replace('\r\n', '\n').rstrip() + '\n', encoding='utf-8', newline='\n')
         hosts.write_text(env.pop('SOURCE_KNOWN_HOSTS').replace('\r\n', '\n').rstrip() + '\n', encoding='utf-8', newline='\n')
@@ -148,6 +149,7 @@ def main():
                 invoke(['git', 'sparse-checkout', 'init', '--cone'], source, env, log)
                 invoke(['git', 'sparse-checkout', 'set', entry.parent.as_posix()], source, env, log)
                 invoke(['git', 'checkout', '--quiet', '--detach', sha], source, env, log)
+                stage = 'entrypoint-check'
                 script = source.joinpath(*entry.parts)
                 if script.is_symlink() or not script.is_file() or not script.resolve().is_relative_to(source):
                     raise ValueError('Unsafe entrypoint')
