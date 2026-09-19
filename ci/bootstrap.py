@@ -65,6 +65,37 @@ def report_phase(path):
         pass
 
 
+def ssh_executable(windows=None):
+    if not (os.name == 'nt' if windows is None else windows):
+        return 'ssh'
+    git = shutil.which('git')
+    if git:
+        # Git for Windows can be resolved through cmd/, bin/, or mingw64/bin/.
+        for parent in Path(git).parents:
+            candidate = parent / 'usr/bin/ssh.exe'
+            if candidate.is_file():
+                return candidate.as_posix()
+    raise RuntimeError('Git SSH is unavailable')
+
+
+def checkout_failure(path):
+    # Classify known infrastructure errors without emitting any private log text.
+    patterns = {
+        'host-key-verification': (b'Host key verification failed', b'host key is known'),
+        'checkout-key-format': (b'invalid format', b'error in libcrypto'),
+        'checkout-authentication': (b'Permission denied (publickey)', b'Repository not found'),
+        'checkout-network': (b'Could not resolve hostname', b'Connection timed out', b'Connection refused'),
+        'source-reference': (b"couldn\'t find remote ref", b'Not a valid object name'),
+    }
+    try:
+        with path.open('rb') as stream:
+            stream.seek(max(0, path.stat().st_size - 65536))
+            tail = stream.read(65536)
+        return next((name for name, values in patterns.items() if any(value in tail for value in values)), 'unclassified')
+    except OSError:
+        return 'unclassified'
+
+
 def main():
     # Public Actions are observable. These checks are in addition to, not a
     # replacement for, environment reviewers and default-branch protections.
@@ -86,8 +117,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix='private-task-', dir=required(env, 'RUNNER_TEMP')) as temp:
         root = Path(temp)
         key, hosts = root / 'identity', root / 'known_hosts'
-        key.write_text(env.pop('SOURCE_DEPLOY_KEY'), encoding='utf-8')
-        hosts.write_text(env.pop('SOURCE_KNOWN_HOSTS'), encoding='utf-8')
+        key.write_text(env.pop('SOURCE_DEPLOY_KEY').replace('\r\n', '\n').rstrip() + '\n', encoding='utf-8', newline='\n')
+        hosts.write_text(env.pop('SOURCE_KNOWN_HOSTS').replace('\r\n', '\n').rstrip() + '\n', encoding='utf-8', newline='\n')
         key.chmod(0o600)
         hosts.chmod(0o600)
         source = root / 'source'
@@ -96,26 +127,23 @@ def main():
         for name in ('GH_DEBUG', 'GIT_TRACE', 'GIT_TRACE_PACKET', 'GIT_TRACE_CURL', 'GIT_CURL_VERBOSE',
                      'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_ALTERNATE_OBJECT_DIRECTORIES'):
             env.pop(name, None)
-        ssh = 'ssh'
-        if os.name == 'nt':
-            git = Path(shutil.which('git') or '')
-            bundled_ssh = git.parent.parent / 'usr/bin/ssh.exe'
-            if not bundled_ssh.is_file():
-                raise RuntimeError('Git SSH is unavailable')
-            ssh = bundled_ssh.as_posix()
+        ssh = ssh_executable()
         env['GIT_SSH_COMMAND'] = (shlex.quote(ssh) + ' -F /dev/null -i ' + shlex.quote(key.as_posix())
             + ' -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes'
             + ' -o UserKnownHostsFile=' + shlex.quote(hosts.as_posix()))
         env['PRIVATE_BOOTSTRAP_LOG'] = str(root / 'bootstrap.log')
         env['PUBLIC_BUILDER_SHA'] = required(env, 'GITHUB_SHA')
         env['RELEASE_STATUS_FILE'] = str(root / 'status.json')
+        stage = 'checkout-initialization'
         try:
             with (root / 'bootstrap.log').open('wb') as log:
                 invoke(['git', 'init', '-q'], source, env, log)
                 invoke(['git', 'remote', 'add', 'origin', f'ssh://git@ssh.github.com:443/{repo}.git'], source, env, log)
                 # Fetch ancestry, without materializing the application working tree.
+                stage = 'private-checkout'
                 invoke(['git', 'fetch', '--quiet', '--no-tags', '--filter=blob:none', 'origin',
                         f'+refs/heads/{branch}:refs/remotes/origin/reviewed'], source, env, log)
+                stage = 'source-ancestry'
                 invoke(['git', 'merge-base', '--is-ancestor', sha, 'refs/remotes/origin/reviewed'], source, env, log)
                 invoke(['git', 'sparse-checkout', 'init', '--cone'], source, env, log)
                 invoke(['git', 'sparse-checkout', 'set', entry.parent.as_posix()], source, env, log)
@@ -125,9 +153,11 @@ def main():
                     raise ValueError('Unsafe entrypoint')
                 # The private entrypoint expands its checkout, installs pinned tools,
                 # performs release tasks and retains diagnostics only in private storage.
+                stage = 'private-task'
                 invoke([sys.executable, '-I', str(script)], source, env, log, timeout=10000)
         except Exception:
             print('Release task failed. Inspect private diagnostics and any completed stages before retrying.')
+            print('Launcher phase: ' + stage + '; category: ' + checkout_failure(root / 'bootstrap.log'))
             report_phase(root / 'status.json')
             return 1
         finally:

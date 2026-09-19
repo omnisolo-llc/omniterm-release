@@ -101,6 +101,26 @@ class VerificationTests(unittest.TestCase):
                 self.assertNotIn('private output', output.getvalue())
 
 
+class SSHLauncherTests(unittest.TestCase):
+    def test_windows_git_layouts_are_supported(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / 'Git'
+            ssh = root / 'usr/bin/ssh.exe'
+            ssh.parent.mkdir(parents=True)
+            ssh.touch()
+            for layout in ('cmd/git.exe', 'bin/git.exe', 'mingw64/bin/git.exe'):
+                with patch.object(b.shutil, 'which', return_value=str(root / layout)):
+                    self.assertEqual(b.ssh_executable(windows=True), ssh.as_posix())
+
+    def test_checkout_error_classification_never_echoes_private_log(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'log'
+            path.write_text('secret/path: Host key verification failed; private-token')
+            self.assertEqual(b.checkout_failure(path), 'host-key-verification')
+            path.write_text('private exception details')
+            self.assertEqual(b.checkout_failure(path), 'unclassified')
+
+
 class BootstrapExecutionTests(unittest.TestCase):
     def test_task_output_is_never_printed_and_checkout_is_removed(self):
         for fail in (False, True):
@@ -120,7 +140,7 @@ class BootstrapExecutionTests(unittest.TestCase):
                         task.write_text("import sys; print('private fixture output'); sys.exit(" + str(int(fail)) + ")")
                     elif args[0] == sys.executable:
                         original_invoke(args, cwd, child_env, log, timeout)
-                with patch.dict(b.os.environ, env, clear=True), patch.object(b, 'invoke', side_effect=invoke), contextlib.redirect_stdout(output):
+                with patch.dict(b.os.environ, env, clear=True), patch.object(b, 'ssh_executable', return_value='ssh'), patch.object(b, 'invoke', side_effect=invoke), contextlib.redirect_stdout(output):
                     self.assertEqual(b.main(), 1 if fail else 0)
                 self.assertNotIn('private fixture output', output.getvalue())
                 self.assertNotIn('example/source', output.getvalue())
@@ -139,7 +159,7 @@ class BootstrapExecutionTests(unittest.TestCase):
                 calls.append(args)
                 if args[:2] == ['git', 'merge-base']:
                     raise subprocess.CalledProcessError(1, args, stderr='private failure detail')
-            with patch.dict(b.os.environ, env, clear=True), patch.object(b, 'invoke', side_effect=invoke), contextlib.redirect_stdout(io.StringIO()):
+            with patch.dict(b.os.environ, env, clear=True), patch.object(b, 'ssh_executable', return_value='ssh'), patch.object(b, 'invoke', side_effect=invoke), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(b.main(), 1)
             self.assertFalse(any(call[0] == sys.executable for call in calls))
             self.assertEqual(list(Path(temp).iterdir()), [])
