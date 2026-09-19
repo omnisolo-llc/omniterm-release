@@ -40,6 +40,7 @@ never publishes files, and an unsigned verification APK is not a release downloa
 Run **Actions → Release → Run workflow** on `main` with a reviewed source revision,
 version, and build number. Leave **build_only** enabled to check Windows, Linux,
 and Android compilation without signing, storage credentials, or publication.
+Choose **verify_target** to check one platform or leave it on **all**.
 The Android output in this mode is unsigned and is discarded after the job.
 This checks compilation, not the complete release-quality or signing gates.
 

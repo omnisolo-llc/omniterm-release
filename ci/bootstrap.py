@@ -96,6 +96,18 @@ def checkout_failure(path):
         return 'unclassified'
 
 
+def task_request(raw):
+    request = json.loads(raw)
+    if not isinstance(request, dict):
+        raise ValueError('Expected request object')
+    selected = request.pop('verify_target', 'all')
+    if selected not in ('all', 'linux', 'windows', 'android'):
+        raise ValueError('Invalid verification target')
+    if selected != 'all' and request.get('build_only') is not True:
+        raise ValueError('Actual releases must build all targets')
+    return json.dumps(request)
+
+
 def main():
     # Public Actions are observable. These checks are in addition to, not a
     # replacement for, environment reviewers and default-branch protections.
@@ -109,6 +121,7 @@ def main():
         print('This launcher requires a reviewed manual workflow on main.')
         return 1
     try:
+        env['RELEASE_REQUEST'] = task_request(required(env, 'RELEASE_REQUEST'))
         repo, branch, entry, sha = validate(env)
     except Exception:
         print('Release configuration is incomplete or invalid. Contact the maintainer.')

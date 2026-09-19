@@ -7,6 +7,11 @@ on:
         description: 'Verify builds only: no signing, uploads, or release publication'
         type: boolean
         default: true
+      verify_target:
+        description: 'Build-only platform selection; actual releases always build all platforms'
+        type: choice
+        options: [all, linux, windows, android]
+        default: all
       source_sha:
         description: 'Reviewed source revision (full commit ID)'
         required: true
@@ -37,7 +42,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release
+  group: ${{ inputs.build_only && format('verify-{0}', github.run_id) || 'release' }}
   cancel-in-progress: false
 
 defaults:
@@ -54,14 +59,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: linux
-            runner: ubuntu-24.04
-          - target: windows
-            runner: windows-2025
-          - target: android
-            runner: ubuntu-24.04
-    runs-on: ${{ matrix.runner }}
+        target: ${{ inputs.verify_target == 'all' && fromJSON('["linux","windows","android"]') || fromJSON(format('["{0}"]', inputs.verify_target)) }}
+    runs-on: ${{ matrix.target == 'windows' && 'windows-2025' || 'ubuntu-24.04' }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

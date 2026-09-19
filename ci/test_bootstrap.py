@@ -82,6 +82,13 @@ class WorkflowOrderingTests(unittest.TestCase):
 
 
 class VerificationTests(unittest.TestCase):
+    def test_target_selection_is_generic_and_cannot_make_partial_release(self):
+        raw = b.task_request(json.dumps({'build_only': True, 'verify_target': 'windows', 'source_sha': 'a' * 40}))
+        self.assertNotIn('verify_target', json.loads(raw))
+        for value in ({'build_only': False, 'verify_target': 'windows'}, {'build_only': True, 'verify_target': '../x'}):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                b.task_request(json.dumps(value))
+
     def test_build_verification_has_no_signing_or_storage_credentials(self):
         workflow = (Path(__file__).resolve().parent.parent / '.github/workflows/release.yml').read_text()
         verify = workflow.split('\n  verify:\n', 1)[1].split('\n  validate:\n', 1)[0]
