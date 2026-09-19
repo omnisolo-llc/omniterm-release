@@ -8,6 +8,13 @@ checkout, or OmniTerm build credentials are needed.
 This is **not a general-purpose HTTP/SOCKS proxy or a STUN/TURN server**.
 It connects compatible OmniTerm clients and agents over WebSockets.
 
+An optional [Cloudflare TURN credential issuer](TURN.md) is also included and is
+**disabled by default**. Cloudflare operates the TURN server; this Worker only
+issues short-lived credentials to authenticated sessions. Turning it on does not
+add WebRTC support to an old client or agent. Test compatible peers before enabling
+it. The linked guide explains free-tier limits, direct-first routing and why
+customer-owned traffic is not an OmniTerm relay charge.
+
 ## Requirements and free-tier limits
 
 Use your own Cloudflare account, Git, and Node.js 22 or newer (Node.js 24 LTS is a

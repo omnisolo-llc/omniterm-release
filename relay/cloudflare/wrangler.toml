@@ -13,3 +13,8 @@ new_sqlite_classes = ["NativeConnectorRelay"]
 
 # Set RELAY_AUTH_TOKEN with: npx wrangler secret put RELAY_AUTH_TOKEN
 # Never add real tokens, account credentials, or private keys to this file.
+
+[vars]
+# Explicit opt-in only after issuer configuration and a real relay-only peer test.
+# Issuer secrets belong in Wrangler secrets, not here.
+RELAY_TURN_ENABLED = "false"

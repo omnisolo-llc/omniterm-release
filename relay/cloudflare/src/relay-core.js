@@ -1,9 +1,10 @@
 // Core modular relay engine for OmniTerminal.
 // Provides base WebSocket lifecycle, postcard framing, duplex stream bridging, and backpressure.
-// Used by the local in-memory, token-authenticated relay implementation.
+// Shared byte-routing engine; subclasses supply admission and accounting policy.
 
 import { FrameDecoder, encodeFrame } from './connector-wire.js';
 import { scopeId, equalBytes, readBoundedJson } from './security.js';
+import { issueCloudflareTurn, turnConfigured, MAX_TURN_TTL } from './cloudflare-turn.js';
 
 export { scopeId, equalBytes, readBoundedJson };
 
@@ -19,7 +20,7 @@ export const OPEN = 1;
 export function nativeConnectorRoute(path) {
   return (
     path === '/v1/connectors/stream' ||
-    /^\/internal\/v1\/connectors\/[A-Za-z0-9_-]{1,128}\/(route|dial-stream|dial-datagram)$/.test(path)
+    /^\/internal\/v1\/connectors\/[A-Za-z0-9_-]{1,128}\/(route|dial-stream|dial-datagram|turn-credentials)$/.test(path)
   );
 }
 
@@ -31,7 +32,7 @@ export function nativeConnectorId(request) {
   }
   return (
     url.pathname.match(
-      /^\/internal\/v1\/connectors\/([A-Za-z0-9_-]{1,128})\/(route|dial-stream|dial-datagram)$/
+      /^\/internal\/v1\/connectors\/([A-Za-z0-9_-]{1,128})\/(route|dial-stream|dial-datagram|turn-credentials)$/
     )?.[1] ?? null
   );
 }
@@ -49,19 +50,19 @@ export class RelayCore {
   }
 
   // Hook: authorize workload token for internal management/dial routes.
-  // Overridden by the token-authenticated relay.
+  // Overridden by each deployment's authentication policy.
   authorizeWorkload(request) {
     return true;
   }
 
   // Hook: verify Hello frame and return registration record { connector_id, tenant_id, ... }
-  // Overridden by the local registration implementation.
+  // Overridden by the enrollment policy for this deployment.
   async authorizeRegistration(connectorId, hello, agent) {
     throw new Error('authorizeRegistration must be implemented by subclass');
   }
 
   // Hook: verify dial request and return live agent object or error Response
-  // Overridden by the local dial authorization implementation.
+  // Overridden by the target authorization policy for this deployment.
   async authorizeDial(connectorId, dialRequest) {
     throw new Error('authorizeDial must be implemented by subclass');
   }
@@ -103,7 +104,10 @@ export class RelayCore {
         return;
       }
       const billable = this.isStreamBillable(stream);
-      if (!billable && !(this.isFreeRelay && stream.authenticated)) {
+      // Gateway-authorized traffic is admitted even when this Worker is not
+      // the billing boundary. An agent marker alone never authorizes managed use.
+      const admitted = this.isFreeRelay ? stream.authenticated : stream.meteringAuthorized;
+      if (!billable && !admitted) {
         if (stream.handshakeBytes + bytes.length > 64 * 1024) {
           stopped = true;
           close('relay_authentication_budget_exceeded');
@@ -327,7 +331,7 @@ export class RelayCore {
         stream.ready = true;
         try {
           if (stream.socket.readyState !== OPEN) throw Error('client_closed');
-          stream.socket.send(JSON.stringify({ status: 'ready' }));
+          stream.socket.send(JSON.stringify({ status: 'ready', stream_id: stream.id }));
         } catch {
           this.closeStream(agent, stream, 'client_closed');
         }
@@ -462,7 +466,9 @@ export class RelayCore {
     pending.stream = stream;
     this.pendingClients.delete(pending);
     clearTimeout(pending.timer);
-    stream.timer = setTimeout(() => close('connector_dial_expired'), 10_000);
+    // Bounded setup must accommodate ICE and interactive SSH proof. The byte
+    // budget and pending/stream limits continue to apply until verified admission.
+    stream.timer = setTimeout(() => close('connector_dial_expired'), 120_000);
     const active = () =>
       !stream.closed &&
       !agent.closed &&
@@ -495,6 +501,68 @@ export class RelayCore {
     });
   }
 
+  // Both relay variants share issuance, size/rate limits and provider validation.
+  // A subclass must separately grant permission: the base class is fail-closed.
+  authorizeTurnCredentials(_authorized, _request) { return false; }
+
+  async reserveTurnIssuance(now) {
+    const storage = this.state?.storage;
+    if (!storage || typeof storage.transaction !== 'function') return false;
+    return storage.transaction(async tx => {
+      const prior = await tx.get('turn-issuance-v1');
+      const minute = Math.floor(now / 60), hour = Math.floor(now / 3600);
+      const value = {
+        minute, hour,
+        minuteCount: prior?.minute === minute ? prior.minuteCount : 0,
+        hourCount: prior?.hour === hour ? prior.hourCount : 0,
+      };
+      if (value.minuteCount >= 12 || value.hourCount >= 120) return false;
+      value.minuteCount++; value.hourCount++;
+      await tx.put('turn-issuance-v1', value);
+      return true;
+    });
+  }
+
+  async turnCredentials(request, connectorId) {
+    if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+    // Never accept a browser query token for a credential-minting operation.
+    if (new URL(request.url).search || !request.headers.get('x-workload-token')) {
+      return json({ error: 'header_authentication_required' }, 401);
+    }
+    const origin = request.headers.get('origin');
+    if (origin && origin !== new URL(request.url).origin) return json({ error: 'origin_forbidden' }, 403);
+    if (!turnConfigured(this.env)) return json({ error: 'turn_unconfigured' }, 503);
+    const parsed = await readBoundedJson(request, 16 * 1024, 5000);
+    if (!parsed.ok) return json({ error: 'invalid_turn_request' }, parsed.status || 400);
+    const input = parsed.value;
+    const now = Math.floor(Date.now() / 1000);
+    if (!input || !scopeId(input.session_id) || !['client', 'agent', 'gateway'].includes(input.peer) ||
+        !Number.isInteger(input.ttl) || input.ttl < 60 || input.ttl > MAX_TURN_TTL ||
+        !Number.isSafeInteger(input.expires_at_epoch) || input.expires_at_epoch <= now ||
+        input.expires_at_epoch > now + 300) return json({ error: 'invalid_turn_request' }, 400);
+    // This is the same enrollment, identity, target, entitlement and budget gate
+    // as the existing WebSocket dial path. No client-supplied account is trusted.
+    const authorized = await this.authorizeDial(connectorId, input);
+    if (authorized instanceof Response || typeof authorized?.status === 'number') return authorized;
+    if (!await this.authorizeTurnCredentials(authorized, input)) return json({ error: 'turn_authority_required' }, 403);
+    const ttl = Math.min(input.ttl, input.expires_at_epoch - now);
+    if (ttl < 60) return json({ error: 'session_expiring' }, 403);
+    if (!await this.reserveTurnIssuance(now)) return json({ error: 'turn_issuance_limited' }, 429);
+    try {
+      const credentials = await issueCloudflareTurn(this.env, {
+        sessionId: input.session_id, connectorId, accountId: authorized.accountId,
+        peer: input.peer, ttl,
+      });
+      return json({ ...credentials, session_id: input.session_id, peer: input.peer });
+    } catch (error) {
+      // Keep local 401/403 admission denials distinct from provider-key failure.
+      // Never include upstream response bodies, URLs or credential material.
+      const code = error?.message === 'turn_provider_permission_required'
+        ? 'turn_provider_permission_required' : 'turn_provider_unavailable';
+      return json({ error: code }, 502);
+    }
+  }
+
   async fetch(request) {
     const path = new URL(request.url).pathname;
     const requestedId = nativeConnectorId(request);
@@ -507,11 +575,12 @@ export class RelayCore {
       return this.acceptAgent(request, requestedId);
     }
     const match = path.match(
-      /^\/internal\/v1\/connectors\/([A-Za-z0-9_-]{1,128})\/(route|dial-stream|dial-datagram)$/
+      /^\/internal\/v1\/connectors\/([A-Za-z0-9_-]{1,128})\/(route|dial-stream|dial-datagram|turn-credentials)$/
     );
     if (!match) return json({ error: 'not_found' }, 404);
     if (!this.authorizeWorkload(request)) return json({ error: 'unauthorized' }, 401);
     const [, connectorId, operation] = match;
+    if (operation === 'turn-credentials') return this.turnCredentials(request, connectorId);
     if (operation === 'dial-datagram') return json({ error: 'authenticated_relay_required' }, 403);
     if (operation === 'route') {
       if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);

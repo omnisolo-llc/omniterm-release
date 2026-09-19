@@ -90,7 +90,14 @@ export class FreeNativeConnectorRelay extends RelayCore {
     };
   }
 
+  authorizeTurnCredentials(_authorized, request) {
+    // Shared-token holders form one trusted owner group in free deployments.
+    // Individual peer identity and target authorization are still verified by
+    // the native peer transport before opening the destination TCP stream.
+    return this.isFreeRelay && ['client', 'agent'].includes(request.peer);
+  }
+
   async onStreamBytes(accountId, stream, byteLength) {
-    // No application-level billing; Cloudflare usage limits still apply.
+    // No OmniTerm billing; the owner's Cloudflare account limits still apply.
   }
 }
