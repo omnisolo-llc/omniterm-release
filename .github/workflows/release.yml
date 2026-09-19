@@ -1,0 +1,201 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_only:
+        description: 'Verify builds only: no signing, uploads, or release publication'
+        type: boolean
+        default: true
+      source_sha:
+        description: 'Reviewed source revision (full commit ID)'
+        required: true
+        type: string
+      version:
+        description: 'Release version (major.minor.patch)'
+        required: true
+        type: string
+      build_number:
+        description: 'Fresh positive build number'
+        required: true
+        type: string
+      ios_action:
+        description: 'Apple distribution action'
+        type: choice
+        options: [skip, upload, submit]
+        default: skip
+      automatic_release:
+        description: 'Release after approval (submit mode only)'
+        type: boolean
+        default: false
+      include_selfhost:
+        description: 'Include the distributable deployment kit'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  verify:
+    name: Verify ${{ matrix.target }} build
+    if: github.ref == 'refs/heads/main' && inputs.build_only
+    environment: downloads
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux
+            runner: ubuntu-24.04
+          - target: windows
+            runner: windows-2025
+          - target: android
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Verify public launcher contracts
+        run: python -m unittest discover -s ci -p 'test_*.py'
+      - name: Verify build without publishing
+        run: python ci/bootstrap.py
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+
+  validate:
+    permissions:
+      contents: write
+    if: github.ref == 'refs/heads/main' && !inputs.build_only
+    environment: downloads
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Verify public launcher contracts
+        run: python3 -m unittest discover -s ci -p 'test_*.py'
+      - name: Validate reviewed source revision
+        run: python3 ci/bootstrap.py
+        env:
+          RELEASE_TARGET: validate
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+
+  downloads:
+    permissions:
+      contents: write
+    needs: validate
+    if: github.ref == 'refs/heads/main' && !inputs.build_only
+    environment: downloads
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux
+            runner: ubuntu-24.04
+          - target: windows
+            runner: windows-2025
+          - target: android
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Execute reviewed release task
+        run: python ci/bootstrap.py
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
+          SIGNING_CONFIG: ${{ matrix.target == 'android' && secrets.SIGNING_CONFIG || '' }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+
+  ios:
+    needs: validate
+    if: github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action != 'skip'
+    environment: app-store
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Execute reviewed release task
+        run: python3 ci/bootstrap.py
+        env:
+          RELEASE_TARGET: ios
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
+          SIGNING_CONFIG: ${{ secrets.SIGNING_CONFIG }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+
+  publish:
+    # Wait for every validation-receipt consumer before deleting draft receipts.
+    # Apple failure remains visible but does not invalidate verified download builds.
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && !inputs.build_only && needs.validate.result == 'success' && needs.downloads.result == 'success' }}
+    needs: [validate, downloads, ios]
+    environment: public-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Execute reviewed release task
+        run: python3 ci/bootstrap.py
+        env:
+          RELEASE_TARGET: publish
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          GH_TOKEN: ${{ github.token }}

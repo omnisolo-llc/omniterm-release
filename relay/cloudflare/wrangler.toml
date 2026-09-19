@@ -1,0 +1,15 @@
+name = "omniterm-free-relay"
+main = "src/index.js"
+compatibility_date = "2026-09-18"
+workers_dev = true
+
+# SQLite-backed Durable Objects are supported on the Workers Free plan.
+[durable_objects]
+bindings = [{ name = "NATIVE_CONNECTORS", class_name = "NativeConnectorRelay" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["NativeConnectorRelay"]
+
+# Set RELAY_AUTH_TOKEN with: npx wrangler secret put RELAY_AUTH_TOKEN
+# Never add real tokens, account credentials, or private keys to this file.
