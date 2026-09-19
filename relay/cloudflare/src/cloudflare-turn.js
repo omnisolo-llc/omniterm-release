@@ -66,11 +66,20 @@ export async function issueCloudflareTurn(env, scope, fetcher = fetch) {
     JSON.stringify(['omni-turn-v1', scope.accountId, scope.connectorId, scope.sessionId, scope.peer])));
   const customIdentifier = Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
   const issuedAt = Math.floor(Date.now() / 1000);
-  const response = await fetcher(API + env.CLOUDFLARE_TURN_KEY_ID + '/credentials/generate-ice-servers', {
-    method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
-    headers: { authorization: 'Bearer ' + env.CLOUDFLARE_TURN_KEY_API_TOKEN, 'content-type': 'application/json' },
-    body: JSON.stringify({ ttl: scope.ttl, customIdentifier }),
-  });
+  let response;
+  try {
+    response = await fetcher(API + env.CLOUDFLARE_TURN_KEY_ID + '/credentials/generate-ice-servers', {
+      // Workerd supports manual/follow, not redirect:error. Manual keeps the
+      // issuer secret at this exact origin; all 3xx responses fail below.
+      method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(10000),
+      headers: { authorization: 'Bearer ' + env.CLOUDFLARE_TURN_KEY_API_TOKEN, 'content-type': 'application/json' },
+      body: JSON.stringify({ ttl: scope.ttl, customIdentifier }),
+    });
+  } catch (error) {
+    // Finite error categories only: never expose fetch exceptions or request data.
+    throw Error(['TimeoutError', 'AbortError'].includes(error?.name)
+      ? 'turn_provider_timeout' : 'turn_provider_transport_error');
+  }
   if (response.status === 401 || response.status === 403) throw Error('turn_provider_permission_required');
   if (!response.ok) throw Error('turn_provider_unavailable');
   const parsed = await readBoundedJson(response, 16 * 1024, 5000);

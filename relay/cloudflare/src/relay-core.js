@@ -557,8 +557,9 @@ export class RelayCore {
     } catch (error) {
       // Keep local 401/403 admission denials distinct from provider-key failure.
       // Never include upstream response bodies, URLs or credential material.
-      const code = error?.message === 'turn_provider_permission_required'
-        ? 'turn_provider_permission_required' : 'turn_provider_unavailable';
+      const allowed = new Set(['turn_provider_permission_required', 'turn_provider_timeout',
+        'turn_provider_transport_error', 'invalid_turn_response']);
+      const code = allowed.has(error?.message) ? error.message : 'turn_provider_unavailable';
       return json({ error: code }, 502);
     }
   }

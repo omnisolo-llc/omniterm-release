@@ -33,8 +33,9 @@ switch is not instantaneous revocation of every existing connection.
 ## Fixing HTTP 403
 
 There are two separate authorization steps. An account API token needs **Calls
-Write**, scoped to this account, to create a TURN key. In the custom-token form
-this is Account / Calls / Edit. Check token expiry and source-IP restrictions.
+Write**, scoped to this account, to create a TURN key. In the current custom-token
+form this is Account / Cloudflare Realtime / Edit (older labels used Calls).
+Check token expiry and source-IP restrictions.
 Successful account lookup or Workers/R2 access does not prove Calls permission.
 The simpler route is to create the TURN key directly in the account's Realtime
 TURN dashboard.
@@ -48,6 +49,21 @@ A 401/403 returned by this Worker's own authentication is different: check
 `RELAY_AUTH_TOKEN` and connector scope. A provider authorization failure is reported
 as `turn_provider_permission_required`; compatible clients may use authenticated
 WebSocket in Automatic mode, but must not label that fallback as successful TURN.
+
+## Runtime compatibility and diagnostics
+
+Generated 64-character hexadecimal tokens from `openssl rand -hex 32` are accepted
+alongside supported UUID/password formats. Token format validation does not make
+predictable strings secure: always generate a fresh random value.
+
+Issuer requests use Workerd-compatible `redirect: "manual"`. Redirect responses
+are rejected rather than forwarding a credential-bearing request to another
+origin. Do not replace this with `follow`; Workerd also does not support the
+browser/Node `redirect: "error"` request setting.
+
+Authenticated issuance failures return bounded categories: provider permission,
+provider timeout, provider transport failure, malformed provider response, or
+unavailability. None contains upstream response bodies, credentials or SDP.
 
 ## Endpoint contract
 

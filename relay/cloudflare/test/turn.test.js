@@ -50,9 +50,21 @@ test('credential issuance uses the provider response rather than invented userna
   assert(sent.url.endsWith('/credentials/generate-ice-servers'));
   assert.equal(JSON.parse(sent.init.body).ttl,120);
   assert.match(JSON.parse(sent.init.body).customIdentifier,/^[a-f0-9]{64}$/);
-  assert.equal(sent.init.redirect,'error');
+  assert.equal(sent.init.redirect,'manual');
   assert.equal(result.iceServers[1].username,'issued-user');
   assert(!JSON.stringify(result).includes(env.CLOUDFLARE_TURN_KEY_API_TOKEN));
+});
+test('issuer never follows redirects with credential-bearing headers',async()=>{
+  const env={RELAY_TURN_ENABLED:'true',CLOUDFLARE_TURN_KEY_ID:'fixture',CLOUDFLARE_TURN_KEY_API_TOKEN:'fixture'.repeat(8)};
+  let calls=0;
+  await assert.rejects(issueCloudflareTurn(env,{sessionId:'s',connectorId:'c',accountId:'a',peer:'client',ttl:120},
+    async(_url,init)=>{calls++;assert.equal(init.redirect,'manual');return new Response(null,{status:302,headers:{location:'https://untrusted.example'}});}),/^Error: turn_provider_unavailable$/);
+  assert.equal(calls,1);
+});
+test('network failure returns a finite code rather than fetch diagnostics',async()=>{
+  const env={RELAY_TURN_ENABLED:'true',CLOUDFLARE_TURN_KEY_ID:'fixture',CLOUDFLARE_TURN_KEY_API_TOKEN:'fixture'.repeat(8)};
+  await assert.rejects(issueCloudflareTurn(env,{sessionId:'s',connectorId:'c',accountId:'a',peer:'client',ttl:120},
+    async()=>{throw new TypeError('private upstream diagnostics');}),/^Error: turn_provider_transport_error$/);
 });
 test('provider response bodies are not echoed in failures',async()=>{
   const env={RELAY_TURN_ENABLED:'true',CLOUDFLARE_TURN_KEY_ID:'fixture',CLOUDFLARE_TURN_KEY_API_TOKEN:'fixture'.repeat(8)};

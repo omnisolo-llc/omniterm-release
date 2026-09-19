@@ -1,6 +1,7 @@
 // Security and token validation utilities for OmniTerminal Free Relay.
 // Enforces constant-time string equality, identifier format validation, and bounded JSON payloads.
-// Implements token validation: must be a valid UUID or a strong password of >= 10 characters.
+// Accepts generated UUID/256-bit hexadecimal tokens or a strong password.
+// Format checks do not measure entropy: generate tokens with a secure RNG.
 
 export function timingSafeEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
@@ -21,6 +22,7 @@ export function scopeId(value) {
 const UUID_HYPHENATED_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const UUID_HEX_REGEX = /^[0-9a-f]{32}$/i;
+const RANDOM_TOKEN_HEX_REGEX = /^[0-9a-f]{64}$/i;
 
 export function isUuid(value) {
   if (typeof value !== 'string') return false;
@@ -49,7 +51,7 @@ export function validateRelayToken(token) {
     return 'Relay token cannot contain whitespace, newlines, or control characters.';
   }
   const trimmed = token.trim();
-  if (isUuid(trimmed)) {
+  if (isUuid(trimmed) || RANDOM_TOKEN_HEX_REGEX.test(trimmed)) {
     return null;
   }
   if (trimmed.length < 10) {
