@@ -61,7 +61,7 @@ jobs:
       max-parallel: 6
       matrix:
         target: ${{ inputs.verify_target == 'all' && fromJSON('["linux","windows","macos","android","web","ios"]') || fromJSON(format('["{0}"]', inputs.verify_target)) }}
-    runs-on: ${{ matrix.target == 'windows' && 'windows-2022' || ((matrix.target == 'macos' || matrix.target == 'ios') && 'macos-15' || 'ubuntu-24.04') }}
+    runs-on: ${{ matrix.target == 'windows' && 'windows-2022' || ((matrix.target == 'macos' || matrix.target == 'ios') && 'macos-26' || 'ubuntu-24.04') }}
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -156,7 +156,7 @@ jobs:
           - target: windows
             runner: windows-2022
           - target: macos
-            runner: macos-15
+            runner: macos-26
           - target: android
             runner: ubuntu-24.04
           - target: web
@@ -206,7 +206,7 @@ jobs:
     needs: validate
     if: github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action != 'skip'
     environment: app-store
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
