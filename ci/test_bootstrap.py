@@ -20,7 +20,7 @@ class BootstrapTests(unittest.TestCase):
         return {'SOURCE_REPOSITORY': 'example/source', 'SOURCE_BRANCH': 'main',
                 'SOURCE_ENTRYPOINT': 'scripts/task.py', 'SOURCE_DEPLOY_KEY': 'synthetic',
                 'SOURCE_KNOWN_HOSTS': 'synthetic', 'BUILD_CONFIG': '{}', 'STORAGE_CONFIG': '{}',
-                'RELEASE_REQUEST': json.dumps({'source_sha': 'a' * 40}), 'RELEASE_TARGET': 'linux'}
+                'RELEASE_REQUEST': json.dumps({'source_sha': 'a' * 40, 'build_only': True, 'ios_action': 'skip'}), 'RELEASE_TARGET': 'linux'}
 
     def test_valid_config(self):
         self.assertEqual(b.validate(self.env())[-1], 'a' * 40)
@@ -68,16 +68,15 @@ class BootstrapTests(unittest.TestCase):
 
 
 class WorkflowOrderingTests(unittest.TestCase):
-    def test_publication_waits_for_optional_receipt_consumer_and_successful_downloads(self):
+    def test_publication_requires_every_download_and_successful_apple_delivery(self):
         workflow = (Path(__file__).resolve().parent.parent / '.github/workflows/release.yml').read_text()
         publish = workflow.split('\n  publish:\n', 1)[1]
         self.assertIn('needs: [validate, downloads, ios]', publish)
-        # A status function prevents skipped/failed optional Apple work from
-        # implicitly skipping publication; cancellation still prevents writes.
+        # No partial release can be published after any platform fails or is skipped.
         expected = ("if: ${{ !cancelled() && github.ref == 'refs/heads/main' "
-                    "&& !inputs.build_only && needs.validate.result == 'success' && needs.downloads.result == 'success' }}")
+                    "&& !inputs.build_only && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.ios.result == 'success' }}")
         self.assertIn(expected, publish)
-        self.assertNotIn("needs.ios.result == 'success'", publish)
+        self.assertIn("needs.ios.result == 'success'", publish)
         self.assertIn('environment: public-release', publish)
 
 
@@ -93,9 +92,12 @@ class VerificationTests(unittest.TestCase):
         workflow = (Path(__file__).resolve().parent.parent / '.github/workflows/release.yml').read_text()
         verify = workflow.split('\n  verify:\n', 1)[1].split('\n  validate:\n', 1)[0]
         self.assertIn('contents: read', verify)
-        for forbidden in ('SIGNING_CONFIG', 'STORAGE_CONFIG', 'GH_TOKEN', 'upload-artifact'):
+        for forbidden in ('SIGNING_CONFIG', 'STORAGE_CONFIG', 'GH_TOKEN'):
             self.assertNotIn(forbidden, verify)
         self.assertIn('inputs.build_only', verify)
+        self.assertIn('encrypted-diagnostics/diagnostics.sealed', verify)
+        self.assertIn('retention-days: 1', verify)
+        self.assertNotIn('path: ${{ github.workspace }}', verify)
 
     def test_phase_reporting_cannot_echo_private_details(self):
         with tempfile.TemporaryDirectory() as temp:

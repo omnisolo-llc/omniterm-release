@@ -37,7 +37,7 @@ def validate(env):
     sha = request.get('source_sha', '')
     if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-fA-F]{40}', sha):
         raise ValueError('Invalid source revision')
-    if env.get('RELEASE_TARGET') not in ('validate', 'linux', 'windows', 'android', 'ios', 'publish'):
+    if env.get('RELEASE_TARGET') not in ('validate', 'linux', 'windows', 'macos', 'android', 'web', 'ios', 'publish'):
         raise ValueError('Invalid target')
     for name in ('SOURCE_DEPLOY_KEY', 'SOURCE_KNOWN_HOSTS'):
         required(env, name)
@@ -61,6 +61,16 @@ def report_phase(path):
         value = json.loads(path.read_text())
         if isinstance(value, dict) and isinstance(value.get('stage'), str) and value['stage'] in stages:
             print('Last completed/attempted phase: ' + value['stage'])
+            allowed = {'android-kotlin-plugin', 'android-sdk-level', 'android-java-version',
+                       'android-namespace', 'android-apk-output', 'dependency-resolution',
+                       'windows-visual-studio', 'cmake-minimum-version', 'native-build-hook',
+                       'rust-compilation', 'native-linker', 'dart-compilation', 'windows-symlinks',
+                       'missing-native-library', 'network-download', 'android-ndk'}
+            diagnostics = value.get('diagnostics', [])
+            if isinstance(diagnostics, list):
+                for category in diagnostics[:6]:
+                    if isinstance(category, str) and category in allowed:
+                        print('Build diagnostic category: ' + category)
     except (OSError, ValueError, TypeError):
         pass
 
@@ -101,17 +111,44 @@ def task_request(raw):
     if not isinstance(request, dict):
         raise ValueError('Expected request object')
     selected = request.pop('verify_target', 'all')
-    if selected not in ('all', 'linux', 'windows', 'android'):
+    if selected not in ('all', 'linux', 'windows', 'macos', 'android', 'web', 'ios'):
         raise ValueError('Invalid verification target')
     if selected != 'all' and request.get('build_only') is not True:
         raise ValueError('Actual releases must build all targets')
+    build_only = request.get('build_only', False)
+    if not isinstance(build_only, bool):
+        raise ValueError('build_only must be a boolean')
+    if not build_only and request.get('ios_action') not in ('upload', 'submit'):
+        raise ValueError('A full release requires Apple upload or submission')
+    if build_only and request.get('ios_action', 'skip') != 'skip':
+        raise ValueError('Build verification cannot distribute to Apple')
     return json.dumps(request)
+
+
+def seal_diagnostics(root, recipient, runner_temp):
+    if not recipient:
+        return
+    output = Path(runner_temp).resolve() / 'encrypted-diagnostics' / 'diagnostics.sealed'
+    # No ambient Node options, GitHub command files, tokens or signing settings.
+    env = {k: v for k, v in os.environ.items() if k.upper() in {'PATH', 'SYSTEMROOT', 'SYSTEMDRIVE', 'TEMP', 'TMP'}}
+    env['DIAGNOSTICS_PUBLIC_KEY'] = recipient
+    try:
+        result = subprocess.run(['node', str(Path(__file__).with_name('seal_diagnostics.cjs')), str(root), str(output)],
+                                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                check=False, timeout=30)
+        if result.returncode:
+            output.unlink(missing_ok=True)
+            print('Encrypted diagnostics could not be retained.')
+    except (OSError, subprocess.TimeoutExpired):
+        output.unlink(missing_ok=True)
+        print('Encrypted diagnostics could not be retained.')
 
 
 def main():
     # Public Actions are observable. These checks are in addition to, not a
     # replacement for, environment reviewers and default-branch protections.
     env = os.environ.copy()
+    recipient = env.pop('DIAGNOSTICS_PUBLIC_KEY', '')
     # Storage is optional; private implementation decides which targets need it.
     env['BUILD_CONFIG'] = env.get('BUILD_CONFIG') or '{}'
     env['STORAGE_CONFIG'] = env.get('STORAGE_CONFIG') or '{}'
@@ -146,6 +183,7 @@ def main():
             + ' -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes'
             + ' -o UserKnownHostsFile=' + shlex.quote(hosts.as_posix()))
         env['PRIVATE_BOOTSTRAP_LOG'] = str(root / 'bootstrap.log')
+        env['PRIVATE_DIAGNOSTIC_LOG'] = str(root / 'task.log')
         env['PUBLIC_BUILDER_SHA'] = required(env, 'GITHUB_SHA')
         env['RELEASE_STATUS_FILE'] = str(root / 'status.json')
         stage = 'checkout-initialization'
@@ -179,6 +217,7 @@ def main():
             # TemporaryDirectory removes the sparse/full source, checkout key and logs.
             # No Actions caches or public artifacts are used for private material.
             key.unlink(missing_ok=True)
+            seal_diagnostics(root, recipient, env['RUNNER_TEMP'])
         print('Release task completed.')
         return 0
 
