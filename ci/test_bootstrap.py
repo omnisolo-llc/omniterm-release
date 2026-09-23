@@ -1,4 +1,5 @@
 import contextlib
+from datetime import datetime, timezone
 import importlib.util
 import io
 import json
@@ -20,7 +21,9 @@ class BootstrapTests(unittest.TestCase):
         return {'SOURCE_REPOSITORY': 'example/source', 'SOURCE_BRANCH': 'main',
                 'SOURCE_ENTRYPOINT': 'scripts/task.py', 'SOURCE_DEPLOY_KEY': 'synthetic',
                 'SOURCE_KNOWN_HOSTS': 'synthetic', 'BUILD_CONFIG': '{}', 'STORAGE_CONFIG': '{}',
-                'RELEASE_REQUEST': json.dumps({'source_sha': 'a' * 40, 'build_only': True, 'ios_action': 'skip'}), 'RELEASE_TARGET': 'linux'}
+                'RELEASE_REQUEST': json.dumps({'source_sha': 'a' * 40, 'version': '0.1.0',
+                                                'build_number': '42', 'build_only': True,
+                                                'ios_action': 'skip'}), 'RELEASE_TARGET': 'linux'}
 
     def test_valid_config(self):
         self.assertEqual(b.validate(self.env())[-1], 'a' * 40)
@@ -71,10 +74,10 @@ class WorkflowOrderingTests(unittest.TestCase):
     def test_publication_requires_every_download_and_successful_apple_delivery(self):
         workflow = (Path(__file__).resolve().parent.parent / '.github/workflows/release.yml').read_text()
         publish = workflow.split('\n  publish:\n', 1)[1]
-        self.assertIn('needs: [validate, downloads, ios]', publish)
+        self.assertIn('needs: [resolve, validate, downloads, ios]', publish)
         # No partial release can be published after any platform fails or is skipped.
         expected = ("if: ${{ !cancelled() && github.ref == 'refs/heads/main' "
-                    "&& !inputs.build_only && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.ios.result == 'success' }}")
+                    "&& !inputs.build_only && needs.resolve.result == 'success' && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.ios.result == 'success' }}")
         self.assertIn(expected, publish)
         self.assertIn("needs.ios.result == 'success'", publish)
         self.assertIn('environment: public-release', publish)
@@ -82,7 +85,8 @@ class WorkflowOrderingTests(unittest.TestCase):
 
 class VerificationTests(unittest.TestCase):
     def test_target_selection_is_generic_and_cannot_make_partial_release(self):
-        raw = b.task_request(json.dumps({'build_only': True, 'verify_target': 'windows', 'source_sha': 'a' * 40}))
+        raw = b.task_request(json.dumps({'build_only': True, 'verify_target': 'windows',
+                                         'source_sha': 'a' * 40, 'build_number': '42'}))
         self.assertNotIn('verify_target', json.loads(raw))
         for value in ({'build_only': False, 'verify_target': 'windows'}, {'build_only': True, 'verify_target': '../x'}):
             with self.subTest(value=value), self.assertRaises(ValueError):
@@ -110,6 +114,47 @@ class VerificationTests(unittest.TestCase):
                 self.assertNotIn('private output', output.getvalue())
 
 
+class ReleaseInputTests(unittest.TestCase):
+    def test_empty_source_sha_uses_resolved_revision_and_version_default(self):
+        now = datetime(2026, 9, 23, 14, 7, tzinfo=timezone.utc)
+        raw = json.dumps({'build_only': True, 'ios_action': 'skip', 'build_number': '42'})
+        resolved = {'source_sha': 'a' * 40}
+
+        request = json.loads(b.task_request(raw, resolved=resolved))
+
+        self.assertEqual(request['source_sha'], 'a' * 40)
+        self.assertEqual(request['version'], '0.1.0')
+        self.assertEqual(request['build_number'], '42')
+        self.assertEqual(b.workflow_identifier(now), '202609231407')
+
+    def test_resolver_may_leave_source_sha_empty_until_branch_tip_is_fetched(self):
+        raw = json.dumps({'build_only': True, 'ios_action': 'skip', 'build_number': '9'})
+
+        request = json.loads(b.task_request(raw, allow_missing_source_sha=True))
+
+        self.assertEqual(request['source_sha'], '')
+        self.assertEqual(request['version'], '0.1.0')
+        self.assertEqual(request['build_number'], '9')
+
+    def test_explicit_source_sha_wins_over_branch_tip(self):
+        requested = 'A' * 40
+        tip = 'b' * 40
+
+        self.assertEqual(b.select_source_sha(requested, tip), requested.lower())
+        self.assertEqual(b.select_source_sha('', tip), tip)
+
+    def test_every_app_build_requires_a_numeric_build_number_from_1_to_9999(self):
+        for build_only, ios_action in ((True, 'skip'), (False, 'upload')):
+            base = {'build_only': build_only, 'ios_action': ios_action,
+                    'source_sha': 'a' * 40, 'version': '0.1.0'}
+            for value in ('', '202609231407', '10000', '0'):
+                with self.subTest(build_only=build_only, value=value), self.assertRaises(ValueError):
+                    b.task_request(json.dumps({**base, 'build_number': value}))
+
+            request = json.loads(b.task_request(json.dumps({**base, 'build_number': '9999'})))
+            self.assertEqual(request['build_number'], '9999')
+
+
 class SSHLauncherTests(unittest.TestCase):
     def test_windows_git_layouts_are_supported(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -131,6 +176,37 @@ class SSHLauncherTests(unittest.TestCase):
 
 
 class BootstrapExecutionTests(unittest.TestCase):
+    def test_resolve_target_writes_branch_tip_and_defaults_to_outputs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            env = BootstrapTests().env()
+            env.update(RELEASE_TARGET='resolve',
+                       RELEASE_REQUEST=json.dumps({'build_only': True, 'ios_action': 'skip',
+                                                   'build_number': '42'}),
+                       GITHUB_ACTIONS='true', GITHUB_EVENT_NAME='workflow_dispatch',
+                       GITHUB_REF='refs/heads/main', GITHUB_SHA='b' * 40,
+                       RUNNER_TEMP=temp, GITHUB_OUTPUT=str(Path(temp) / 'outputs'))
+            calls = []
+
+            def invoke(args, cwd, child_env, log, timeout=600):
+                calls.append(args)
+
+            output = io.StringIO()
+            with (patch.dict(b.os.environ, env, clear=True),
+                  patch.object(b, 'ssh_executable', return_value='ssh'),
+                  patch.object(b, 'invoke', side_effect=invoke),
+                  patch.object(b, 'capture', return_value='c' * 40),
+                  contextlib.redirect_stdout(output)):
+                self.assertEqual(b.main(), 0)
+
+            values = dict(line.split('=', 1) for line in Path(env['GITHUB_OUTPUT']).read_text().splitlines())
+            self.assertEqual(values['source_sha'], 'c' * 40)
+            self.assertEqual(values['version'], '0.1.0')
+            self.assertEqual(values['build_number'], '42')
+            self.assertRegex(values['workflow_id'], r'^\d{12}$')
+            self.assertTrue(any(call[:2] == ['git', 'merge-base'] for call in calls))
+            self.assertNotIn('c' * 40, output.getvalue())
+            self.assertEqual(list(Path(temp).iterdir()), [Path(env['GITHUB_OUTPUT'])])
+
     def test_task_output_is_never_printed_and_checkout_is_removed(self):
         for fail in (False, True):
             with self.subTest(fail=fail), tempfile.TemporaryDirectory() as temp:

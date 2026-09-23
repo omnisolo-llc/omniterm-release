@@ -13,15 +13,17 @@ on:
         options: [all, linux, windows, macos, android, web, ios]
         default: all
       source_sha:
-        description: 'Reviewed source revision (full commit ID)'
-        required: true
+        description: 'Optional reviewed source revision; blank selects the latest commit on the configured OmniTerm branch'
+        required: false
         type: string
+        default: ''
       version:
         description: 'Release version (major.minor.patch)'
-        required: true
+        required: false
         type: string
+        default: '0.1.0'
       build_number:
-        description: 'Fresh positive build number'
+        description: 'Fresh shared app build number (1-9999)'
         required: true
         type: string
       ios_action:
@@ -50,8 +52,38 @@ defaults:
     shell: bash
 
 jobs:
+  resolve:
+    name: Resolve release inputs
+    if: github.ref == 'refs/heads/main'
+    environment: downloads
+    permissions:
+      contents: read
+    outputs:
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
+      version: ${{ steps.resolve.outputs.version }}
+      build_number: ${{ steps.resolve.outputs.build_number }}
+      workflow_id: ${{ steps.resolve.outputs.workflow_id }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve source revision and defaults
+        id: resolve
+        run: python3 ci/bootstrap.py
+        env:
+          RELEASE_TARGET: resolve
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+
   verify:
-    name: Verify ${{ matrix.target }} build
+    name: Verify ${{ matrix.target }} build (${{ needs.resolve.outputs.workflow_id }})
+    needs: resolve
     if: github.ref == 'refs/heads/main' && inputs.build_only
     environment: downloads
     permissions:
@@ -84,6 +116,9 @@ jobs:
         env:
           RELEASE_TARGET: ${{ matrix.target }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
           SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
@@ -101,8 +136,10 @@ jobs:
           compression-level: 0
 
   validate:
+    name: Validate release (${{ needs.resolve.outputs.workflow_id }})
     permissions:
       contents: write
+    needs: resolve
     if: github.ref == 'refs/heads/main' && !inputs.build_only
     environment: downloads
     runs-on: ubuntu-24.04
@@ -122,6 +159,9 @@ jobs:
           RELEASE_TARGET: validate
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
           SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
@@ -141,9 +181,10 @@ jobs:
           compression-level: 0
 
   downloads:
+    name: Build ${{ matrix.target }} (${{ needs.resolve.outputs.workflow_id }})
     permissions:
       contents: write
-    needs: validate
+    needs: [resolve, validate]
     if: github.ref == 'refs/heads/main' && !inputs.build_only
     environment: downloads
     strategy:
@@ -181,6 +222,9 @@ jobs:
           RELEASE_TARGET: ${{ matrix.target }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
           SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
@@ -201,9 +245,10 @@ jobs:
           compression-level: 0
 
   ios:
+    name: iOS delivery (${{ needs.resolve.outputs.workflow_id }})
     permissions:
       contents: write
-    needs: validate
+    needs: [resolve, validate]
     if: github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action != 'skip'
     environment: app-store
     runs-on: macos-26
@@ -221,6 +266,9 @@ jobs:
           RELEASE_TARGET: ios
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
           SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
@@ -241,10 +289,11 @@ jobs:
           compression-level: 0
 
   publish:
+    name: Publish release (${{ needs.resolve.outputs.workflow_id }})
     # Wait for every validation-receipt consumer before deleting draft receipts.
     # No partial release: every download and signed Apple delivery must succeed.
-    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && !inputs.build_only && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.ios.result == 'success' }}
-    needs: [validate, downloads, ios]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && !inputs.build_only && needs.resolve.result == 'success' && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.ios.result == 'success' }}
+    needs: [resolve, validate, downloads, ios]
     environment: public-release
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -262,6 +311,9 @@ jobs:
         env:
           RELEASE_TARGET: publish
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
           SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}

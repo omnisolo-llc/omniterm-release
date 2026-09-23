@@ -45,9 +45,13 @@ never publishes files, and an unsigned verification APK is not a release downloa
 
 ## For maintainers
 
-Run **Actions → Release → Run workflow** on `main` with a reviewed source revision,
-version, and build number. Leave **build_only** enabled and **ios_action=skip** to
-check Windows, Linux, macOS, Android, browser bundles, and unsigned iOS device builds
+Run **Actions → Release → Run workflow** on `main`. A blank source SHA resolves to
+the latest commit on the configured private OmniTerm branch; enter a full commit ID
+to pin a reviewed revision. Every job uses the same resolved commit. The version
+defaults to `0.1.0`. Platform job names include a UTC workflow identifier in
+`yyyymmddHHmm` format. Supply a fresh shared app build number from `1` to `9999`.
+Leave **build_only** enabled and
+**ios_action=skip** to check Windows, Linux, macOS, Android, browser bundles, and unsigned iOS device builds
 without signing, storage credentials, or publication. Choose **verify_target** to
 check one platform or leave it on **all**. Up to six platform jobs run concurrently.
 Unsigned verification output is discarded after the job. This checks compilation
@@ -59,12 +63,13 @@ Disable **build_only** only for an actual release with the original signing iden
 and production application configuration installed in the protected environments.
 Set **ios_action=upload** for App Store Connect delivery, or **submit** for review;
 a full release cannot skip Apple. Automatic store release remains an explicit opt-in.
-Use a fresh shared Apple-compatible build number (1–9999).
+Full Apple releases use the same shared Apple-compatible build number.
 
 The release path runs the complete source gates, stages every required download in
 a draft, verifies downloaded bytes and SHA-256 checksums, and requires a matching
 Apple delivery receipt before publication. Missing, stale, wrong-platform, or
-unexpected artifacts prevent publication. All jobs use one reviewed source revision.
+unexpected artifacts prevent publication. All jobs use one source revision resolved
+before validation and builds begin.
 Private build and delivery receipts are removed before the release becomes public.
 
 Private object storage is optional for desktop/Android diagnostics but is required

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Generic private-source launcher. Never prints source paths or process output."""
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -35,9 +36,11 @@ def validate(env):
             or any(part.startswith('.') for part in path.parts)):
         raise ValueError('Invalid entrypoint')
     sha = request.get('source_sha', '')
-    if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-fA-F]{40}', sha):
+    if (not isinstance(sha, str)
+            or (sha and not re.fullmatch(r'[0-9a-fA-F]{40}', sha))
+            or (not sha and env.get('RELEASE_TARGET') != 'resolve')):
         raise ValueError('Invalid source revision')
-    if env.get('RELEASE_TARGET') not in ('validate', 'linux', 'windows', 'macos', 'android', 'web', 'ios', 'publish'):
+    if env.get('RELEASE_TARGET') not in ('resolve', 'validate', 'linux', 'windows', 'macos', 'android', 'web', 'ios', 'publish'):
         raise ValueError('Invalid target')
     for name in ('SOURCE_DEPLOY_KEY', 'SOURCE_KNOWN_HOSTS'):
         required(env, name)
@@ -106,7 +109,22 @@ def checkout_failure(path):
         return 'unclassified'
 
 
-def task_request(raw):
+def select_source_sha(requested, branch_tip):
+    requested = requested.strip().lower()
+    branch_tip = branch_tip.strip().lower()
+    if not re.fullmatch(r'[0-9a-f]{40}', branch_tip):
+        raise ValueError('Invalid source branch tip')
+    if requested and not re.fullmatch(r'[0-9a-f]{40}', requested):
+        raise ValueError('Invalid source revision')
+    return requested or branch_tip
+
+
+def workflow_identifier(now=None):
+    timestamp = now or datetime.now(timezone.utc)
+    return timestamp.astimezone(timezone.utc).strftime('%Y%m%d%H%M')
+
+
+def task_request(raw, *, resolved=None, allow_missing_source_sha=False):
     request = json.loads(raw)
     if not isinstance(request, dict):
         raise ValueError('Expected request object')
@@ -122,7 +140,45 @@ def task_request(raw):
         raise ValueError('A full release requires Apple upload or submission')
     if build_only and request.get('ios_action', 'skip') != 'skip':
         raise ValueError('Build verification cannot distribute to Apple')
+
+    if resolved:
+        for key in ('source_sha', 'version', 'build_number'):
+            if resolved.get(key):
+                request[key] = resolved[key]
+
+    sha = request.get('source_sha', '')
+    if not isinstance(sha, str) or (sha and not re.fullmatch(r'[0-9a-fA-F]{40}', sha)):
+        raise ValueError('Invalid source revision')
+    if not sha and not allow_missing_source_sha:
+        raise ValueError('A source revision must be resolved before building')
+    request['source_sha'] = sha.lower()
+
+    version = request.get('version') or '0.1.0'
+    if not isinstance(version, str) or not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', version):
+        raise ValueError('Version must use major.minor.patch')
+    request['version'] = version
+
+    build_number = request.get('build_number', '')
+    if not isinstance(build_number, str):
+        raise ValueError('Invalid build number')
+    if not re.fullmatch(r'[1-9][0-9]{0,3}', build_number):
+        raise ValueError('App builds require a build number from 1-9999')
+    request['build_number'] = build_number
     return json.dumps(request)
+
+
+def capture(args, cwd, env, timeout=600):
+    result = subprocess.run(args, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, check=True, timeout=timeout)
+    return result.stdout.decode('ascii').strip()
+
+
+def write_resolved_outputs(path, request, source_sha, run_id):
+    values = {'source_sha': source_sha, 'version': request['version'],
+              'build_number': request['build_number'], 'workflow_id': run_id}
+    with Path(path).open('a', encoding='utf-8', newline='\n') as output:
+        for key, value in values.items():
+            output.write(f'{key}={value}\n')
 
 
 def seal_diagnostics(root, recipient, runner_temp):
@@ -158,7 +214,15 @@ def main():
         print('This launcher requires a reviewed manual workflow on main.')
         return 1
     try:
-        env['RELEASE_REQUEST'] = task_request(required(env, 'RELEASE_REQUEST'))
+        target = env.get('RELEASE_TARGET')
+        resolved = None
+        if target != 'resolve':
+            resolved = {'source_sha': env.get('RESOLVED_SOURCE_SHA', ''),
+                        'version': env.get('RESOLVED_VERSION', ''),
+                        'build_number': env.get('RESOLVED_BUILD_NUMBER', '')}
+        env['RELEASE_REQUEST'] = task_request(
+            required(env, 'RELEASE_REQUEST'), resolved=resolved,
+            allow_missing_source_sha=(target == 'resolve'))
         repo, branch, entry, sha = validate(env)
     except Exception:
         print('Release configuration is incomplete or invalid. Contact the maintainer.')
@@ -195,8 +259,18 @@ def main():
                 stage = 'private-checkout'
                 invoke(['git', 'fetch', '--quiet', '--no-tags', '--filter=blob:none', 'origin',
                         f'+refs/heads/{branch}:refs/remotes/origin/reviewed'], source, env, log)
+                if target == 'resolve':
+                    stage = 'source-revision'
+                    branch_tip = capture(['git', 'rev-parse', 'refs/remotes/origin/reviewed'], source, env)
+                    sha = select_source_sha(sha, branch_tip)
                 stage = 'source-ancestry'
                 invoke(['git', 'merge-base', '--is-ancestor', sha, 'refs/remotes/origin/reviewed'], source, env, log)
+                if target == 'resolve':
+                    request = json.loads(env['RELEASE_REQUEST'])
+                    write_resolved_outputs(required(env, 'GITHUB_OUTPUT'), request, sha,
+                                           workflow_identifier())
+                    print('Release inputs resolved.')
+                    return 0
                 invoke(['git', 'sparse-checkout', 'init', '--cone'], source, env, log)
                 invoke(['git', 'sparse-checkout', 'set', entry.parent.as_posix()], source, env, log)
                 invoke(['git', 'checkout', '--quiet', '--detach', sha], source, env, log)
@@ -217,7 +291,8 @@ def main():
             # TemporaryDirectory removes the sparse/full source, checkout key and logs.
             # No Actions caches or public artifacts are used for private material.
             key.unlink(missing_ok=True)
-            seal_diagnostics(root, recipient, env['RUNNER_TEMP'])
+            if target != 'resolve':
+                seal_diagnostics(root, recipient, env['RUNNER_TEMP'])
         print('Release task completed.')
         return 0
 
