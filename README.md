@@ -26,7 +26,7 @@ look under the selected release's **Assets** section.
 | --- | --- |
 | Windows x64 | `omniterm-<version>-windows-x64.zip` — extract the portable app |
 | Linux x64 | `omniterm-<version>-linux-x64.tar.gz` — desktop bundle built on Ubuntu 24.04 |
-| macOS Apple Silicon | `omniterm-<version>-macos-arm64.zip` — application bundle |
+| macOS Apple Silicon (13.5+) | `omniterm-<version>-macos-arm64.zip` — application bundle |
 | Android | Universal APK, separate `armeabi-v7a`, `arm64-v8a`, and `x86_64` APKs, and an AAB |
 | Native services | `omniterm-<version>-services-{linux-x64,windows-x64,macos-arm64}` archives |
 | Linux agent | `omniterm-<version>-agent-linux-amd64.deb` and `omniterm-<version>-agent-linux-x86_64.rpm` |
