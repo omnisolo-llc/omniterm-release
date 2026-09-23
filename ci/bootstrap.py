@@ -119,6 +119,18 @@ def select_source_sha(requested, branch_tip):
     return requested or branch_tip
 
 
+def approved_release_sha(path=None):
+    approval = Path(path) if path is not None else Path(__file__).with_name('approved_release_source.json')
+    if approval.is_symlink() or not approval.is_file() or approval.stat().st_size > 128:
+        raise ValueError('A reviewed release source is required')
+    value = json.loads(approval.read_text(encoding='ascii'))
+    if (not isinstance(value, dict) or set(value) != {'source_sha'}
+            or not isinstance(value['source_sha'], str)
+            or not re.fullmatch(r'[0-9a-f]{40}', value['source_sha'])):
+        raise ValueError('A reviewed release source is required')
+    return value['source_sha']
+
+
 def workflow_identifier(now=None):
     timestamp = now or datetime.now(timezone.utc)
     return timestamp.astimezone(timezone.utc).strftime('%Y%m%d%H%M')
@@ -141,6 +153,13 @@ def task_request(raw, *, resolved=None, allow_missing_source_sha=False):
     if build_only and request.get('ios_action', 'skip') != 'skip':
         raise ValueError('Build verification cannot distribute to Apple')
 
+    requested_sha = request.get('source_sha', '')
+    approved_sha = None
+    if not build_only:
+        approved_sha = approved_release_sha()
+        if not isinstance(requested_sha, str) or requested_sha.lower() != approved_sha:
+            raise ValueError('The full release source has not been reviewed')
+
     if resolved:
         for key in ('source_sha', 'version', 'build_number'):
             if resolved.get(key):
@@ -152,6 +171,8 @@ def task_request(raw, *, resolved=None, allow_missing_source_sha=False):
     if not sha and not allow_missing_source_sha:
         raise ValueError('A source revision must be resolved before building')
     request['source_sha'] = sha.lower()
+    if approved_sha is not None and request['source_sha'] != approved_sha:
+        raise ValueError('The resolved release source differs from the reviewed source')
 
     version = request.get('version') or '0.1.0'
     if not isinstance(version, str) or not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', version):

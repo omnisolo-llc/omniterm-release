@@ -13,7 +13,7 @@ on:
         options: [all, linux, windows, macos, android, web, ios]
         default: all
       source_sha:
-        description: 'Optional reviewed source revision; blank selects the latest commit on the configured OmniTerm branch'
+        description: 'Build-only may use the branch tip; a full release requires the SHA approved in ci/approved_release_source.json'
         required: false
         type: string
         default: ''

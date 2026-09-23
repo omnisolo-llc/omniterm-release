@@ -45,9 +45,12 @@ never publishes files, and an unsigned verification APK is not a release downloa
 
 ## For maintainers
 
-Run **Actions → Release → Run workflow** on `main`. A blank source SHA resolves to
-the latest commit on the configured private OmniTerm branch; enter a full commit ID
-to pin a reviewed revision. Every job uses the same resolved commit. The version
+Run **Actions → Release → Run workflow** on `main`. Build-only runs may leave
+the source SHA blank to inspect the latest private branch tip. Before a full
+release, review the exact private source commit and approve its SHA through a
+reviewed change to `ci/approved_release_source.json` on this protected branch.
+Enter that same full SHA in the workflow; a blank, different, or unresolved
+approval blocks publication. Every job uses the same resolved commit. The version
 defaults to `0.1.0`. Platform job names include a UTC workflow identifier in
 `yyyymmddHHmm` format. Supply a fresh shared app build number from `1` to `9999`.
 Leave **build_only** enabled and
@@ -59,7 +62,7 @@ and package structure, not the complete source-quality or production signing gat
 Public launcher, encryption, and relay contracts also run on every push and pull request
 on Linux, Windows, and macOS without private credentials.
 
-Disable **build_only** only for an actual release with the original signing identities
+Disable **build_only** only for an actual release with an approved source SHA and the original signing identities
 and production application configuration installed in the protected environments.
 Set **ios_action=upload** for App Store Connect delivery, or **submit** for review;
 a full release cannot skip Apple. Automatic store release remains an explicit opt-in.

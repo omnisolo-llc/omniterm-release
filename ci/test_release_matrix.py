@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import re
 import unittest
+from unittest.mock import patch
 
 import test_bootstrap as bootstrap_tests
 
@@ -68,9 +69,10 @@ class ReleaseMatrixTests(unittest.TestCase):
                                                             'source_sha': 'a' * 40,
                                                             'version': '0.1.0', 'build_number': '1'}))
         for action in ('upload', 'submit'):
-            bootstrap_tests.b.task_request(json.dumps({'build_only': False, 'ios_action': action,
-                                                        'source_sha': 'a' * 40,
-                                                        'version': '0.1.0', 'build_number': '1'}))
+            with patch.object(bootstrap_tests.b, 'approved_release_sha', return_value='a' * 40):
+                bootstrap_tests.b.task_request(json.dumps({'build_only': False, 'ios_action': action,
+                                                            'source_sha': 'a' * 40,
+                                                            'version': '0.1.0', 'build_number': '1'}))
 
     def test_apple_job_can_write_its_delivery_receipt(self):
         text = (ROOT / '.github/workflows/release.yml').read_text().split('\n  ios:\n')[1].split('\n  publish:\n')[0]

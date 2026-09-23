@@ -147,12 +147,41 @@ class ReleaseInputTests(unittest.TestCase):
         for build_only, ios_action in ((True, 'skip'), (False, 'upload')):
             base = {'build_only': build_only, 'ios_action': ios_action,
                     'source_sha': 'a' * 40, 'version': '0.1.0'}
-            for value in ('', '202609231407', '10000', '0'):
-                with self.subTest(build_only=build_only, value=value), self.assertRaises(ValueError):
-                    b.task_request(json.dumps({**base, 'build_number': value}))
+            with patch.object(b, 'approved_release_sha', return_value='a' * 40):
+                for value in ('', '202609231407', '10000', '0'):
+                    with self.subTest(build_only=build_only, value=value), self.assertRaises(ValueError):
+                        b.task_request(json.dumps({**base, 'build_number': value}))
 
-            request = json.loads(b.task_request(json.dumps({**base, 'build_number': '9999'})))
-            self.assertEqual(request['build_number'], '9999')
+                request = json.loads(b.task_request(json.dumps({**base, 'build_number': '9999'})))
+                self.assertEqual(request['build_number'], '9999')
+
+    def test_full_release_requires_explicit_reviewed_source_in_every_job(self):
+        base = {'build_only': False, 'ios_action': 'upload', 'build_number': '42'}
+        with patch.object(b, 'approved_release_sha', return_value='a' * 40):
+            for source in ('', 'b' * 40):
+                with self.subTest(source=source), self.assertRaises(ValueError):
+                    b.task_request(json.dumps({**base, 'source_sha': source}),
+                                   allow_missing_source_sha=True)
+            approved = {**base, 'source_sha': 'A' * 40}
+            self.assertEqual(json.loads(b.task_request(json.dumps(approved)))['source_sha'],
+                             'a' * 40)
+            with self.assertRaises(ValueError):
+                b.task_request(json.dumps(approved), resolved={'source_sha': 'b' * 40})
+
+    def test_reviewed_source_file_is_exact_and_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            approval = Path(temp) / 'approval.json'
+            for value in ({'source_sha': ''}, {'source_sha': 'A' * 40},
+                          {'source_sha': 'a' * 40, 'other': True}):
+                approval.write_text(json.dumps(value))
+                with self.assertRaises(ValueError):
+                    b.approved_release_sha(approval)
+            approval.write_text(json.dumps({'source_sha': 'a' * 40}))
+            self.assertEqual(b.approved_release_sha(approval), 'a' * 40)
+            linked = Path(temp) / 'linked.json'
+            linked.symlink_to(approval)
+            with self.assertRaises(ValueError):
+                b.approved_release_sha(linked)
 
 
 class SSHLauncherTests(unittest.TestCase):
