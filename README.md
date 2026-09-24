@@ -19,14 +19,15 @@ STUN/TURN service.
 
 ## Download the app
 
-Open **[Releases](https://github.com/omnisolo-llc/omniterm-release/releases)** and
-look under the selected release's **Assets** section.
+Open **[Releases](https://github.com/omnisolo-llc/omniterm-release/releases)**.
+Use the R2 download links in the selected release's notes; the same files remain
+under **Assets** as a GitHub fallback.
 
 | Platform | File to look for |
 | --- | --- |
 | Windows x64 | `omniterm-<version>-windows-x64.zip` — extract the portable app |
 | Linux x64 | `omniterm-<version>-linux-x64.tar.gz` — desktop bundle built on Ubuntu 24.04 |
-| macOS Apple Silicon | `omniterm-<version>-macos-arm64.zip` — application bundle |
+| macOS Apple Silicon (13.5+) | `omniterm-<version>-macos-arm64.zip` — application bundle |
 | Android | Universal APK, separate `armeabi-v7a`, `arm64-v8a`, and `x86_64` APKs, and an AAB |
 | Native services | `omniterm-<version>-services-{linux-x64,windows-x64,macos-arm64}` archives |
 | Linux agent | `omniterm-<version>-agent-linux-amd64.deb` and `omniterm-<version>-agent-linux-x86_64.rpm` |
@@ -36,8 +37,10 @@ look under the selected release's **Assets** section.
 The release inventory contains **15 downloadable application packages**, plus
 checksums and an optional self-hosted relay kit. Docker images are excluded.
 Each application download has a SHA-256 sidecar; `SHA256SUMS` covers all 15 packages.
-Windows archives are not Authenticode-signed installers. The macOS application is
-not Developer ID notarized. Apple delivery does not imply App Store approval or availability.
+The Windows ZIP is portable, not an installer; its executables and libraries are
+Authenticode-signed. The macOS release application is Developer ID signed and
+notarized before packaging. Apple delivery does not imply App Store approval or
+availability.
 
 **The application downloads are not available until a full release build succeeds.**
 A relay-only release contains the relay kit, not the apps. A build-verification run
