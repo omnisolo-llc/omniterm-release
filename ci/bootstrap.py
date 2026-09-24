@@ -143,6 +143,11 @@ def task_request(raw, *, resolved=None, allow_missing_source_sha=False):
     selected = request.pop('verify_target', 'all')
     if selected not in ('all', 'linux', 'windows', 'macos', 'android', 'web', 'ios'):
         raise ValueError('Invalid verification target')
+    windows_preview = request.pop('preview_windows_self_sign', False)
+    if not isinstance(windows_preview, bool):
+        raise ValueError('Windows preview selection must be a boolean')
+    if windows_preview and (selected != 'windows' or request.get('build_only') is not True):
+        raise ValueError('Self-signed Windows preview requires Windows build-only verification')
     if selected != 'all' and request.get('build_only') is not True:
         raise ValueError('Actual releases must build all targets')
     build_only = request.get('build_only', False)
