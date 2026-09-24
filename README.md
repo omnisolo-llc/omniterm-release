@@ -19,8 +19,9 @@ STUN/TURN service.
 
 ## Download the app
 
-Open **[Releases](https://github.com/omnisolo-llc/omniterm-release/releases)** and
-look under the selected release's **Assets** section.
+Open **[Releases](https://github.com/omnisolo-llc/omniterm-release/releases)**.
+Use the R2 download links in the selected release's notes; the same files remain
+under **Assets** as a GitHub fallback.
 
 | Platform | File to look for |
 | --- | --- |
@@ -36,8 +37,10 @@ look under the selected release's **Assets** section.
 The release inventory contains **15 downloadable application packages**, plus
 checksums and an optional self-hosted relay kit. Docker images are excluded.
 Each application download has a SHA-256 sidecar; `SHA256SUMS` covers all 15 packages.
-Windows archives are not Authenticode-signed installers. The macOS application is
-not Developer ID notarized. Apple delivery does not imply App Store approval or availability.
+The Windows ZIP is portable, not an installer; its executables and libraries are
+Authenticode-signed. The macOS release application is Developer ID signed and
+notarized before packaging. Apple delivery does not imply App Store approval or
+availability.
 
 **The application downloads are not available until a full release build succeeds.**
 A relay-only release contains the relay kit, not the apps. A build-verification run
