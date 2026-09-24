@@ -38,6 +38,27 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertNotIn('uses: docker/', text)
         self.assertNotIn('publish_docker', text)
 
+    def test_self_signed_preview_is_windows_build_only(self):
+        request = {'build_only': True, 'verify_target': 'windows',
+                   'preview_windows_self_sign': True,
+                   'source_sha': 'a' * 40, 'build_number': '42'}
+        forwarded = json.loads(bootstrap_tests.b.task_request(json.dumps(request)))
+        self.assertNotIn('preview_windows_self_sign', forwarded)
+        for change in ({'build_only': False}, {'verify_target': 'all'},
+                       {'verify_target': 'linux'}, {'preview_windows_self_sign': 'true'}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                bootstrap_tests.b.task_request(json.dumps({**request, **change}))
+
+        workflow = (ROOT / '.github/workflows/release.yml').read_text()
+        verify = workflow.split('\n  verify:\n', 1)[1].split('\n  validate:\n', 1)[0]
+        self.assertIn("inputs.preview_windows_self_sign && matrix.target == 'windows'", verify)
+        self.assertIn('WINDOWS_PREVIEW_OUTPUT_DIR:', verify)
+        self.assertIn('name: windows-self-signed-preview-', verify)
+        self.assertIn('retention-days: 7', verify)
+        self.assertIn('if-no-files-found: error', verify)
+        publish = workflow.split('\n  publish:\n', 1)[1]
+        self.assertNotIn('preview_windows_self_sign', publish)
+
     def test_release_defaults_are_resolved_once_for_all_jobs(self):
         text = (ROOT / '.github/workflows/release.yml').read_text()
         source_input = text.split('      source_sha:\n', 1)[1].split('      version:\n', 1)[0]
@@ -61,6 +82,10 @@ class ReleaseMatrixTests(unittest.TestCase):
     def test_download_jobs_cover_every_public_distribution_group(self):
         text = (ROOT / '.github/workflows/release.yml').read_text().split('\n  downloads:\n')[1].split('\n  ios:\n')[0]
         self.assertEqual(set(re.findall(r'- target: ([a-z]+)', text)), TARGETS - {'ios'})
+        self.assertIn("contains(fromJSON('[\"android\",\"windows\",\"macos\"]'), matrix.target) && secrets.SIGNING_CONFIG", text)
+        self.assertIn('id-token: write', text)
+        self.assertIn('74bd7d27e6ce1051409c38d9b46bc8df0400ecd643d51ffbf2ac00869061e40b', text)
+        self.assertIn('OMNI_WINDOWS_ARTIFACT_SIGNING_DLIB=$dlib', text)
 
     def test_full_release_must_explicitly_request_apple_delivery(self):
         for action in ('skip', '', None):

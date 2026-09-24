@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       build_only:
-        description: 'Verify builds: no signing, application uploads, or release publication'
+        description: 'Verify builds: no release publication or production signing; optional self-signed Windows preview'
         type: boolean
         default: true
       verify_target:
@@ -12,6 +12,10 @@ on:
         type: choice
         options: [all, linux, windows, macos, android, web, ios]
         default: all
+      preview_windows_self_sign:
+        description: 'Windows build-only: retain a self-signed evaluation ZIP as a short-lived Actions artifact'
+        type: boolean
+        default: false
       source_sha:
         description: 'Build-only may use the branch tip; a full release requires the SHA approved in ci/approved_release_source.json'
         required: false
@@ -125,6 +129,16 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
+          WINDOWS_PREVIEW_OUTPUT_DIR: ${{ inputs.preview_windows_self_sign && matrix.target == 'windows' && format('{0}/windows-preview', runner.temp) || '' }}
+      - name: Retain self-signed Windows evaluation build
+        if: ${{ inputs.preview_windows_self_sign && matrix.target == 'windows' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-self-signed-preview-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-preview/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
       - name: Retain encrypted diagnostics only
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -184,6 +198,7 @@ jobs:
     name: Build ${{ matrix.target }} (${{ needs.resolve.outputs.workflow_id }})
     permissions:
       contents: write
+      id-token: write
     needs: [resolve, validate]
     if: github.ref == 'refs/heads/main' && !inputs.build_only
     environment: downloads
@@ -216,6 +231,24 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Prepare pinned Windows signing client
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $root = Join-Path $env:RUNNER_TEMP 'artifact-signing'
+          New-Item -ItemType Directory -Path $root | Out-Null
+          $archive = Join-Path $root 'client.zip'
+          Invoke-WebRequest -Uri 'https://api.nuget.org/v3-flatcontainer/microsoft.artifactsigning.client/1.0.128/microsoft.artifactsigning.client.1.0.128.nupkg' -OutFile $archive
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -cne '74bd7d27e6ce1051409c38d9b46bc8df0400ecd643d51ffbf2ac00869061e40b') { throw 'Artifact Signing client hash mismatch' }
+          $package = Join-Path $root 'package'
+          Expand-Archive -LiteralPath $archive -DestinationPath $package
+          $dlib = Join-Path $package 'bin/x64/Azure.CodeSigning.Dlib.dll'
+          if (-not (Test-Path -LiteralPath $dlib -PathType Leaf)) { throw 'Artifact Signing client is incomplete' }
+          if (-not ((dotnet --list-runtimes) -match '^Microsoft\.NETCore\.App 8\.')) { throw '.NET 8 runtime is required for Artifact Signing' }
+          "OMNI_WINDOWS_ARTIFACT_SIGNING_DLIB=$dlib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Execute reviewed release task
         run: python ci/bootstrap.py
         env:
@@ -231,7 +264,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
-          SIGNING_CONFIG: ${{ matrix.target == 'android' && secrets.SIGNING_CONFIG || '' }}
+          SIGNING_CONFIG: ${{ contains(fromJSON('["android","windows","macos"]'), matrix.target) && secrets.SIGNING_CONFIG || '' }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
       - name: Retain encrypted diagnostics only
