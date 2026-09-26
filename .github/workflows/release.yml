@@ -264,7 +264,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
-          SIGNING_CONFIG: ${{ contains(fromJSON('["android","windows","macos"]'), matrix.target) && secrets.SIGNING_CONFIG || '' }}
+          SIGNING_CONFIG: ${{ matrix.target == 'windows' && (secrets.WINDOWS_SIGNING_CONFIG || secrets.SIGNING_CONFIG) || matrix.target == 'macos' && (secrets.MACOS_SIGNING_CONFIG || secrets.SIGNING_CONFIG) || matrix.target == 'android' && (secrets.ANDROID_SIGNING_CONFIG || secrets.SIGNING_CONFIG) || '' }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
       - name: Retain encrypted diagnostics only
@@ -308,7 +308,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
-          SIGNING_CONFIG: ${{ secrets.SIGNING_CONFIG }}
+          SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG || secrets.SIGNING_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
       - name: Retain encrypted diagnostics only

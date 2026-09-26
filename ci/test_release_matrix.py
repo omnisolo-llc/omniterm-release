@@ -82,7 +82,9 @@ class ReleaseMatrixTests(unittest.TestCase):
     def test_download_jobs_cover_every_public_distribution_group(self):
         text = (ROOT / '.github/workflows/release.yml').read_text().split('\n  downloads:\n')[1].split('\n  ios:\n')[0]
         self.assertEqual(set(re.findall(r'- target: ([a-z]+)', text)), TARGETS - {'ios'})
-        self.assertIn("contains(fromJSON('[\"android\",\"windows\",\"macos\"]'), matrix.target) && secrets.SIGNING_CONFIG", text)
+        self.assertIn("matrix.target == 'windows' && (secrets.WINDOWS_SIGNING_CONFIG || secrets.SIGNING_CONFIG)", text)
+        self.assertIn("matrix.target == 'macos' && (secrets.MACOS_SIGNING_CONFIG || secrets.SIGNING_CONFIG)", text)
+        self.assertIn("matrix.target == 'android' && (secrets.ANDROID_SIGNING_CONFIG || secrets.SIGNING_CONFIG)", text)
         self.assertIn('id-token: write', text)
         self.assertIn('74bd7d27e6ce1051409c38d9b46bc8df0400ecd643d51ffbf2ac00869061e40b', text)
         self.assertIn('OMNI_WINDOWS_ARTIFACT_SIGNING_DLIB=$dlib', text)
@@ -113,3 +115,24 @@ class ReleaseMatrixTests(unittest.TestCase):
                 self.assertIn('path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed', job)
                 self.assertIn('retention-days: 1', job)
                 self.assertNotIn('path: ${{ github.workspace }}', job)
+
+    def test_signing_configuration_is_target_scoped_and_denied_to_unrelated_jobs(self):
+        text = (ROOT / '.github/workflows/release.yml').read_text()
+        downloads = text.split('\n  downloads:\n')[1].split('\n  ios:\n')[0]
+        self.assertIn('id-token: write', downloads)
+        self.assertIn("matrix.target == 'windows' && (secrets.WINDOWS_SIGNING_CONFIG || secrets.SIGNING_CONFIG)", downloads)
+        self.assertIn("matrix.target == 'macos' && (secrets.MACOS_SIGNING_CONFIG || secrets.SIGNING_CONFIG)", downloads)
+        self.assertIn("matrix.target == 'android' && (secrets.ANDROID_SIGNING_CONFIG || secrets.SIGNING_CONFIG)", downloads)
+        # Unrelated download targets (linux, web) evaluate to empty string
+        self.assertTrue(downloads.strip().endswith("|| ''") or "|| ''" in downloads)
+
+        # Build-only verification, validate, and publish jobs must not receive SIGNING_CONFIG
+        for job_name in ('verify', 'validate', 'publish'):
+            job_text = re.split(r'\n  [a-z]+:\n', text.split(f'\n  {job_name}:\n')[1], maxsplit=1)[0]
+            self.assertNotIn('SIGNING_CONFIG:', job_text, f'{job_name} must not expose signing secrets')
+            self.assertNotIn('id-token: write', job_text, f'{job_name} must not grant OIDC token permissions')
+
+        # iOS delivery receives target-scoped iOS signing configuration in app-store environment
+        ios_text = text.split('\n  ios:\n')[1].split('\n  publish:\n')[0]
+        self.assertIn('SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG || secrets.SIGNING_CONFIG }}', ios_text)
+
