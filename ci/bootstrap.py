@@ -111,6 +111,10 @@ def git_ssh_candidates(git):
 
 def checkout_reviewed_entrypoint(source, sha, entry, env, log):
     """Materialize executable source only after actual Git ancestry verification."""
+    # Compare canonical paths on both sides: macOS temporary directories and
+    # Windows short-path aliases can otherwise make a valid child look external.
+    # The entrypoint itself must still be a regular, non-symlink file inside it.
+    source = Path(source).resolve(strict=True)
     invoke(['git', 'merge-base', '--is-ancestor', sha, 'refs/remotes/origin/reviewed'], source, env, log)
     invoke(['git', 'sparse-checkout', 'init', '--cone'], source, env, log)
     invoke(['git', 'sparse-checkout', 'set', entry.parent.as_posix()], source, env, log)

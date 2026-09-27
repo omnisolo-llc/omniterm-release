@@ -270,6 +270,35 @@ class BootstrapExecutionTests(unittest.TestCase):
                 self.assertEqual(git('rev-parse', 'HEAD'), sha)
             self.assertFalse(root.exists())
 
+    def test_reviewed_checkout_accepts_a_real_directory_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, env, git, sha = self.repository(root)
+            alias = root / 'source-alias'
+            alias.symlink_to(source, target_is_directory=True)
+            with (root / 'private.log').open('wb') as log:
+                script = b.checkout_reviewed_entrypoint(
+                    alias, sha, PurePosixPath('scripts/task.py'), env, log)
+            self.assertEqual(script.resolve(), (source / 'scripts/task.py').resolve())
+            self.assertEqual(git('rev-parse', 'HEAD'), sha)
+
+    def test_reviewed_checkout_still_rejects_an_escaping_entrypoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, env, git, _ = self.repository(root)
+            outside = root / 'outside.py'
+            outside.write_text("raise RuntimeError('must never execute')\n")
+            entry = source / 'scripts/escape.py'
+            entry.symlink_to(outside)
+            git('add', 'scripts/escape.py')
+            git('commit', '-qm', 'Reviewed tree with forbidden external entrypoint')
+            sha = git('rev-parse', 'HEAD')
+            git('update-ref', 'refs/remotes/origin/reviewed', sha)
+            with (root / 'private.log').open('wb') as log:
+                with self.assertRaisesRegex(ValueError, 'Unsafe entrypoint'):
+                    b.checkout_reviewed_entrypoint(
+                        source, sha, PurePosixPath('scripts/escape.py'), env, log)
+
     def test_actual_nonancestor_revision_cannot_materialize_entrypoint(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
