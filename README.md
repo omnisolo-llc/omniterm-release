@@ -78,8 +78,14 @@ unexpected artifacts prevent publication. All jobs use one source revision resol
 before validation and builds begin.
 Private build and delivery receipts are removed before the release becomes public.
 
-Private object storage is optional for desktop/Android diagnostics but is required
-for the existing Apple signing, diagnostic retention, and upload-intent safeguards.
+Full releases first run genuine application integration on six protected native
+and browser runners. Validation acquires all six artifacts from private storage
+for that exact source revision, workflow run and attempt. Missing hardware,
+incomplete results or mismatched evidence prevent certification. Build-only
+verification does not substitute for these application tests.
+
+Private object storage is required for this integration evidence and the existing
+Apple signing, diagnostic retention, and upload-intent safeguards.
 Failed drafts or attempted Apple version/build pairs need review before retrying.
 Do not replace an established Android keystore or Apple signing identity to make a build pass.
 
@@ -105,3 +111,18 @@ source and compiler output are removed after the task; diagnostics are encrypted
 for `OMNI_AGENT_DIAGNOSTICS_PUBLIC_KEY`. Only the four actual compiled binaries
 are uploaded as distributable artifacts. Signing and download promotion require
 the agent lifecycle gates and the production release authority.
+
+After all six candidate builds, protected `installation` jobs execute the actual
+produced packages on the corresponding dedicated platform runners. Configure
+`OMNI_INSTALL_CONFIG_<PLATFORM>` as a path to that runner's private installation
+configuration; it identifies the real upgrade baseline and hardware/browser
+prerequisites. The jobs receive draft-download and private evidence storage
+credentials, without signing credentials. Installation evidence must identify
+the exact candidate bytes and the current workflow run and attempt.
+
+The iOS build retains its signed candidate privately. Apple delivery is a
+separate protected `ios_delivery` job after all six installation jobs succeed.
+Public promotion additionally requires successful installation and Apple
+delivery. Missing native runners, genuine prior packages, OS probes or valid
+receipts block promotion. Workflow definitions alone do not demonstrate those
+checks have executed. No workflow was triggered during this remediation.
