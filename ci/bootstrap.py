@@ -116,6 +116,15 @@ def checkout_reviewed_entrypoint(source, sha, entry, env, log):
     # The entrypoint itself must still be a regular, non-symlink file inside it.
     source = Path(source).resolve(strict=True)
     invoke(['git', 'merge-base', '--is-ancestor', sha, 'refs/remotes/origin/reviewed'], source, env, log)
+    # Git can materialize a tracked symlink as an ordinary file on hosts with
+    # core.symlinks=false. Check the reviewed tree mode as well as the filesystem.
+    tree_record = capture(['git', 'ls-tree', '-z', sha, '--', entry.as_posix()], source, env)
+    record, _, extra = tree_record.partition('\0')
+    header, separator, path = record.partition('\t')
+    fields = header.split()
+    if (extra or not separator or path != entry.as_posix() or len(fields) != 3
+            or fields[0] not in ('100644', '100755') or fields[1] != 'blob'):
+        raise ValueError('Unsafe entrypoint')
     invoke(['git', 'sparse-checkout', 'init', '--cone'], source, env, log)
     invoke(['git', 'sparse-checkout', 'set', entry.parent.as_posix()], source, env, log)
     invoke(['git', 'checkout', '--quiet', '--detach', sha], source, env, log)

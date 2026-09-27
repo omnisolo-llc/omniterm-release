@@ -290,14 +290,23 @@ class BootstrapExecutionTests(unittest.TestCase):
             outside.write_text("raise RuntimeError('must never execute')\n")
             entry = source / 'scripts/escape.py'
             entry.symlink_to(outside)
+            git('config', 'core.symlinks', 'true')
             git('add', 'scripts/escape.py')
             git('commit', '-qm', 'Reviewed tree with forbidden external entrypoint')
             sha = git('rev-parse', 'HEAD')
             git('update-ref', 'refs/remotes/origin/reviewed', sha)
-            with (root / 'private.log').open('wb') as log:
-                with self.assertRaisesRegex(ValueError, 'Unsafe entrypoint'):
-                    b.checkout_reviewed_entrypoint(
-                        source, sha, PurePosixPath('scripts/escape.py'), env, log)
+            self.assertTrue(git('ls-tree', sha, '--', 'scripts/escape.py').startswith('120000 '))
+            for flattened in (False, True):
+                with self.subTest(flattened_symlink=flattened):
+                    if flattened:
+                        git('config', 'core.symlinks', 'false')
+                        entry.unlink()  # Only the symlink created by this fixture.
+                        git('checkout-index', '--force', '--', 'scripts/escape.py')
+                        self.assertFalse(entry.is_symlink())
+                    with (root / 'private.log').open('wb') as log:
+                        with self.assertRaisesRegex(ValueError, 'Unsafe entrypoint'):
+                            b.checkout_reviewed_entrypoint(
+                                source, sha, PurePosixPath('scripts/escape.py'), env, log)
 
     def test_actual_nonancestor_revision_cannot_materialize_entrypoint(self):
         with tempfile.TemporaryDirectory() as directory:
