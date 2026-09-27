@@ -95,3 +95,13 @@ requested revision and workflow before approving an environment.
 
 The public relay and launcher source use the [GPL-3.0 license](LICENSE).
 Separately distributed application binaries retain their own license.
+# Omni Agent Native Builds
+
+The `Omni Agent Native Release` manual workflow builds the standalone agent on
+native Linux and macOS runners for x64 and ARM64. Its exact source revision and
+version are pinned in `ci/approved_agent_source.json`. It uses the existing
+protected `downloads` environment and read-only source deploy key. Private
+source and compiler output are removed after the task; diagnostics are encrypted
+for `OMNI_AGENT_DIAGNOSTICS_PUBLIC_KEY`. Only the four actual compiled binaries
+are uploaded as distributable artifacts. Signing and download promotion require
+the agent lifecycle gates and the production release authority.
