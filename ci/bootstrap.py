@@ -40,11 +40,26 @@ def validate(env):
             or (sha and not re.fullmatch(r'[0-9a-fA-F]{40}', sha))
             or (not sha and env.get('RELEASE_TARGET') != 'resolve')):
         raise ValueError('Invalid source revision')
-    if env.get('RELEASE_TARGET') not in ('resolve', 'validate', 'linux', 'windows', 'macos', 'android', 'web', 'ios', 'publish'):
+    if env.get('RELEASE_TARGET') not in ('resolve', 'integration', 'installation', 'package-signatures', 'apple-testflight', 'validate', 'linux', 'windows', 'macos', 'android', 'web', 'ios', 'ios-deliver', 'publish'):
         raise ValueError('Invalid target')
     for name in ('SOURCE_DEPLOY_KEY', 'SOURCE_KNOWN_HOSTS'):
         required(env, name)
     return repo, branch, path, sha.lower()
+
+
+def validate_integration_authority(env, repo, branch):
+    """Physical devices and private evidence accept only this protected launcher."""
+    builder = 'omnisolo-llc/omniterm-release'
+    if (env.get('GITHUB_ACTIONS') != 'true'
+            or env.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'
+            or env.get('GITHUB_REPOSITORY') != builder
+            or env.get('GITHUB_REF') != 'refs/heads/main'
+            or env.get('GITHUB_WORKFLOW_REF') != builder + '/.github/workflows/release.yml@refs/heads/main'
+            or repo != required(env, 'SOURCE_REPOSITORY') or branch != 'main'
+            or not re.fullmatch('[a-f0-9]{40}', env.get('GITHUB_SHA', ''))
+            or any(not re.fullmatch('[1-9][0-9]*', env.get(key, ''))
+                   for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'))):
+        raise ValueError('Untrusted integration execution or acquisition authority')
 
 
 def invoke(args, cwd, env, log, timeout=600):
@@ -84,11 +99,39 @@ def ssh_executable(windows=None):
     git = shutil.which('git')
     if git:
         # Git for Windows can be resolved through cmd/, bin/, or mingw64/bin/.
-        for parent in Path(git).parents:
-            candidate = parent / 'usr/bin/ssh.exe'
+        for candidate in git_ssh_candidates(git):
             if candidate.is_file():
                 return candidate.as_posix()
     raise RuntimeError('Git SSH is unavailable')
+
+
+def git_ssh_candidates(git):
+    return [parent / 'usr/bin/ssh.exe' for parent in Path(git).parents]
+
+
+def checkout_reviewed_entrypoint(source, sha, entry, env, log):
+    """Materialize executable source only after actual Git ancestry verification."""
+    # Compare canonical paths on both sides: macOS temporary directories and
+    # Windows short-path aliases can otherwise make a valid child look external.
+    # The entrypoint itself must still be a regular, non-symlink file inside it.
+    source = Path(source).resolve(strict=True)
+    invoke(['git', 'merge-base', '--is-ancestor', sha, 'refs/remotes/origin/reviewed'], source, env, log)
+    # Git can materialize a tracked symlink as an ordinary file on hosts with
+    # core.symlinks=false. Check the reviewed tree mode as well as the filesystem.
+    tree_record = capture(['git', 'ls-tree', '-z', sha, '--', entry.as_posix()], source, env)
+    record, _, extra = tree_record.partition('\0')
+    header, separator, path = record.partition('\t')
+    fields = header.split()
+    if (extra or not separator or path != entry.as_posix() or len(fields) != 3
+            or fields[0] not in ('100644', '100755') or fields[1] != 'blob'):
+        raise ValueError('Unsafe entrypoint')
+    invoke(['git', 'sparse-checkout', 'init', '--cone'], source, env, log)
+    invoke(['git', 'sparse-checkout', 'set', entry.parent.as_posix()], source, env, log)
+    invoke(['git', 'checkout', '--quiet', '--detach', sha], source, env, log)
+    script = source.joinpath(*entry.parts)
+    if script.is_symlink() or not script.is_file() or not script.resolve().is_relative_to(source):
+        raise ValueError('Unsafe entrypoint')
+    return script
 
 
 def checkout_failure(path):
@@ -250,6 +293,8 @@ def main():
             required(env, 'RELEASE_REQUEST'), resolved=resolved,
             allow_missing_source_sha=(target == 'resolve'))
         repo, branch, entry, sha = validate(env)
+        if target in ('integration', 'installation', 'package-signatures', 'apple-testflight', 'ios-deliver', 'validate'):
+            validate_integration_authority(env, repo, branch)
     except Exception:
         print('Release configuration is incomplete or invalid. Contact the maintainer.')
         return 1
@@ -275,11 +320,14 @@ def main():
         env['PRIVATE_BOOTSTRAP_LOG'] = str(root / 'bootstrap.log')
         env['PRIVATE_DIAGNOSTIC_LOG'] = str(root / 'task.log')
         env['PUBLIC_BUILDER_SHA'] = required(env, 'GITHUB_SHA')
+        env['RELEASE_INTEGRATION_SOURCE_REPOSITORY'] = repo
+        env['RELEASE_INTEGRATION_SOURCE_REF'] = 'refs/heads/' + branch
         env['RELEASE_STATUS_FILE'] = str(root / 'status.json')
         stage = 'checkout-initialization'
         try:
             with (root / 'bootstrap.log').open('wb') as log:
                 invoke(['git', 'init', '-q'], source, env, log)
+                invoke(['git', 'config', 'core.autocrlf', 'false'], source, env, log)
                 invoke(['git', 'remote', 'add', 'origin', f'ssh://git@ssh.github.com:443/{repo}.git'], source, env, log)
                 # Fetch ancestry, without materializing the application working tree.
                 stage = 'private-checkout'
@@ -297,17 +345,13 @@ def main():
                                            workflow_identifier())
                     print('Release inputs resolved.')
                     return 0
-                invoke(['git', 'sparse-checkout', 'init', '--cone'], source, env, log)
-                invoke(['git', 'sparse-checkout', 'set', entry.parent.as_posix()], source, env, log)
-                invoke(['git', 'checkout', '--quiet', '--detach', sha], source, env, log)
                 stage = 'entrypoint-check'
-                script = source.joinpath(*entry.parts)
-                if script.is_symlink() or not script.is_file() or not script.resolve().is_relative_to(source):
-                    raise ValueError('Unsafe entrypoint')
+                script = checkout_reviewed_entrypoint(source, sha, entry, env, log)
                 # The private entrypoint expands its checkout, installs pinned tools,
                 # performs release tasks and retains diagnostics only in private storage.
                 stage = 'private-task'
-                invoke([sys.executable, '-I', str(script)], source, env, log, timeout=10000)
+                invoke([sys.executable, '-I', str(script)], source, env, log,
+                       timeout=21600 if target == 'integration' else 10800 if target == 'installation' else 10000)
         except Exception:
             print('Release task failed. Inspect private diagnostics and any completed stages before retrying.')
             print('Launcher phase: ' + stage + '; category: ' + checkout_failure(root / 'bootstrap.log'))

@@ -85,6 +85,76 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
 
+  integration:
+    name: Actual ${{ matrix.platform }} application integration
+    needs: resolve
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    environment: downloads
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: omniterm-release-linux
+            device_variable: OMNI_INTEGRATION_DEVICE_LINUX
+            defines_variable: OMNI_INTEGRATION_DEFINES_LINUX
+          - platform: macos
+            runner: omniterm-release-macos
+            device_variable: OMNI_INTEGRATION_DEVICE_MACOS
+            defines_variable: OMNI_INTEGRATION_DEFINES_MACOS
+          - platform: windows
+            runner: omniterm-release-windows
+            device_variable: OMNI_INTEGRATION_DEVICE_WINDOWS
+            defines_variable: OMNI_INTEGRATION_DEFINES_WINDOWS
+          - platform: android
+            runner: omniterm-release-android
+            device_variable: OMNI_INTEGRATION_DEVICE_ANDROID
+            defines_variable: OMNI_INTEGRATION_DEFINES_ANDROID
+          - platform: ios
+            runner: omniterm-release-ios
+            device_variable: OMNI_INTEGRATION_DEVICE_IOS
+            defines_variable: OMNI_INTEGRATION_DEFINES_IOS
+          - platform: web
+            runner: omniterm-release-web
+            device_variable: OMNI_INTEGRATION_DEVICE_WEB
+            defines_variable: OMNI_INTEGRATION_DEFINES_WEB
+    runs-on: [self-hosted, '${{ matrix.runner }}']
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Execute genuine reviewed application journeys and retain private evidence
+        run: python ci/bootstrap.py
+        env:
+          RELEASE_TARGET: integration
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          OMNI_INTEGRATION_PLATFORM: ${{ matrix.platform }}
+          OMNI_INTEGRATION_DEVICE: ${{ vars[matrix.device_variable] }}
+          OMNI_INTEGRATION_DEFINES: ${{ vars[matrix.defines_variable] }}
+          OMNI_CHROMEDRIVER_PORT: ${{ vars.OMNI_CHROMEDRIVER_PORT }}
+          DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
+      - name: Retain encrypted integration diagnostics only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostics-integration-${{ matrix.platform }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
+          if-no-files-found: ignore
+          retention-days: 1
+          compression-level: 0
+
   verify:
     name: Verify ${{ matrix.target }} build (${{ needs.resolve.outputs.workflow_id }})
     needs: resolve
@@ -153,7 +223,7 @@ jobs:
     name: Validate release (${{ needs.resolve.outputs.workflow_id }})
     permissions:
       contents: write
-    needs: resolve
+    needs: [resolve, integration]
     if: github.ref == 'refs/heads/main' && !inputs.build_only
     environment: downloads
     runs-on: ubuntu-24.04
@@ -278,7 +348,7 @@ jobs:
           compression-level: 0
 
   ios:
-    name: iOS delivery (${{ needs.resolve.outputs.workflow_id }})
+    name: Build signed iOS candidate (${{ needs.resolve.outputs.workflow_id }})
     permissions:
       contents: write
     needs: [resolve, validate]
@@ -321,12 +391,216 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+  package_signatures:
+    name: Sign verified Linux and browser candidate manifests (${{ needs.resolve.outputs.workflow_id }})
+    permissions:
+      contents: read
+    needs: [resolve, validate, downloads]
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    environment: package-signing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Execute reviewed release task
+        run: python3 ci/bootstrap.py
+        env:
+          RELEASE_TARGET: package-signatures
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
+          SIGNING_CONFIG: ${{ secrets.PACKAGE_SIGNING_CONFIG }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
+      - name: Retain encrypted diagnostics only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostics-package-signatures-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
+          if-no-files-found: ignore
+          retention-days: 1
+          compression-level: 0
+
+  apple_testflight:
+    name: Process exact signed iOS candidate in internal TestFlight (${{ needs.resolve.outputs.workflow_id }})
+    permissions:
+      contents: write
+    needs: [resolve, validate, ios]
+    if: github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action != 'skip'
+    environment: app-store
+    runs-on: macos-26
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Execute reviewed release task
+        run: python3 ci/bootstrap.py
+        env:
+          RELEASE_TARGET: apple-testflight
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
+          SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG || secrets.SIGNING_CONFIG }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
+      - name: Retain encrypted diagnostics only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostics-apple-testflight-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
+          if-no-files-found: ignore
+          retention-days: 1
+          compression-level: 0
+
+  installation:
+    name: Install and launch actual ${{ matrix.platform }} candidate
+    needs: [resolve, validate, downloads, ios, package_signatures, apple_testflight]
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    environment: downloads
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: omniterm-release-linux
+            device_variable: OMNI_INTEGRATION_DEVICE_LINUX
+            config_variable: OMNI_INSTALL_CONFIG_LINUX
+          - platform: macos
+            runner: omniterm-release-macos
+            device_variable: OMNI_INTEGRATION_DEVICE_MACOS
+            config_variable: OMNI_INSTALL_CONFIG_MACOS
+          - platform: windows
+            runner: omniterm-release-windows
+            device_variable: OMNI_INTEGRATION_DEVICE_WINDOWS
+            config_variable: OMNI_INSTALL_CONFIG_WINDOWS
+          - platform: android
+            runner: omniterm-release-android
+            device_variable: OMNI_INTEGRATION_DEVICE_ANDROID
+            config_variable: OMNI_INSTALL_CONFIG_ANDROID
+          - platform: ios
+            runner: omniterm-release-ios
+            device_variable: OMNI_INTEGRATION_DEVICE_IOS
+            config_variable: OMNI_INSTALL_CONFIG_IOS
+          - platform: web
+            runner: omniterm-release-web
+            device_variable: OMNI_INTEGRATION_DEVICE_WEB
+            config_variable: OMNI_INSTALL_CONFIG_WEB
+    runs-on: [self-hosted, '${{ matrix.runner }}']
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install exact candidate and retain actual private OS evidence
+        run: python ci/bootstrap.py
+        env:
+          RELEASE_TARGET: installation
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          GH_TOKEN: ${{ github.token }}
+          BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          OMNI_INTEGRATION_PLATFORM: ${{ matrix.platform }}
+          OMNI_INTEGRATION_DEVICE: ${{ vars[matrix.device_variable] }}
+          OMNI_INSTALL_CONFIG: ${{ vars[matrix.config_variable] }}
+          OMNI_CHROMEDRIVER_PORT: ${{ vars.OMNI_CHROMEDRIVER_PORT }}
+          DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
+      - name: Retain encrypted installation diagnostics only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostics-installation-${{ matrix.platform }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
+          if-no-files-found: ignore
+          retention-days: 1
+          compression-level: 0
+
+  ios_delivery:
+    name: Deliver verified iOS candidate (${{ needs.resolve.outputs.workflow_id }})
+    permissions:
+      contents: write
+    needs: [resolve, validate, ios, apple_testflight, installation]
+    if: github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action != 'skip'
+    environment: app-store
+    runs-on: macos-26
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Execute reviewed release task
+        run: python3 ci/bootstrap.py
+        env:
+          RELEASE_TARGET: ios-deliver
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
+          SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG || secrets.SIGNING_CONFIG }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
+      - name: Retain encrypted diagnostics only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostics-ios-delivery-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
+          if-no-files-found: ignore
+          retention-days: 1
+          compression-level: 0
+
   publish:
     name: Publish release (${{ needs.resolve.outputs.workflow_id }})
     # Wait for every validation-receipt consumer before deleting draft receipts.
     # No partial release: every download and signed Apple delivery must succeed.
-    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && !inputs.build_only && needs.resolve.result == 'success' && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.ios.result == 'success' }}
-    needs: [resolve, validate, downloads, ios]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && !inputs.build_only && needs.resolve.result == 'success' && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.ios.result == 'success' && needs.package_signatures.result == 'success' && needs.apple_testflight.result == 'success' && needs.installation.result == 'success' && needs.ios_delivery.result == 'success' }}
+    needs: [resolve, validate, downloads, ios, package_signatures, apple_testflight, installation, ios_delivery]
     environment: public-release
     runs-on: ubuntu-24.04
     timeout-minutes: 60

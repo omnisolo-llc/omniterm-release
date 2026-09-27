@@ -4,16 +4,30 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import unittest
-from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('bootstrap', Path(__file__).with_name('bootstrap.py'))
 b = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(b)
+
+
+@contextlib.contextmanager
+def approved_launcher():
+    # Load unchanged production code beside an actual parser-input approval file.
+    # This exercises file validation without replacing any function or process.
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / 'bootstrap.py'
+        shutil.copyfile(Path(b.__file__), path)
+        path.with_name('approved_release_source.json').write_text(json.dumps({'source_sha': 'a' * 40}))
+        spec = importlib.util.spec_from_file_location('reviewed_launcher_contract', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        yield module
 
 
 class BootstrapTests(unittest.TestCase):
@@ -56,28 +70,28 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(b.validate(env)[-1], 'a' * 40)
 
     def test_no_non_manual_execution(self):
-        output = io.StringIO()
-        with patch.dict(b.os.environ, {}, clear=True), patch.object(b.subprocess, 'run') as run:
-            with contextlib.redirect_stdout(output): self.assertEqual(b.main(), 1)
-            run.assert_not_called()
+        env = {key: value for key, value in os.environ.items() if not key.startswith(('GITHUB_', 'SOURCE_', 'RELEASE_'))}
+        result = subprocess.run([sys.executable, str(Path(b.__file__))], env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('reviewed manual workflow', result.stdout)
 
     def test_invalid_config_does_not_leak(self):
         env = self.env(); env.update(GITHUB_ACTIONS='true', GITHUB_EVENT_NAME='workflow_dispatch',
                                      GITHUB_REF='refs/heads/main', SOURCE_REPOSITORY='confidential!')
-        output = io.StringIO()
-        with patch.dict(b.os.environ, env, clear=True), contextlib.redirect_stdout(output):
-            self.assertEqual(b.main(), 1)
-        self.assertNotIn('confidential', output.getvalue())
+        result = subprocess.run([sys.executable, str(Path(b.__file__))], env={**os.environ, **env},
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn('confidential', result.stdout + result.stderr)
 
 
 class WorkflowOrderingTests(unittest.TestCase):
     def test_publication_requires_every_download_and_successful_apple_delivery(self):
         workflow = (Path(__file__).resolve().parent.parent / '.github/workflows/release.yml').read_text()
         publish = workflow.split('\n  publish:\n', 1)[1]
-        self.assertIn('needs: [resolve, validate, downloads, ios]', publish)
+        self.assertIn('needs: [resolve, validate, downloads, ios, package_signatures, apple_testflight, installation, ios_delivery]', publish)
         # No partial release can be published after any platform fails or is skipped.
         expected = ("if: ${{ !cancelled() && github.ref == 'refs/heads/main' "
-                    "&& !inputs.build_only && needs.resolve.result == 'success' && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.ios.result == 'success' }}")
+                    "&& !inputs.build_only && needs.resolve.result == 'success' && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.ios.result == 'success' && needs.package_signatures.result == 'success' && needs.apple_testflight.result == 'success' && needs.installation.result == 'success' && needs.ios_delivery.result == 'success' }}")
         self.assertIn(expected, publish)
         self.assertIn("needs.ios.result == 'success'", publish)
         self.assertIn('environment: public-release', publish)
@@ -147,26 +161,26 @@ class ReleaseInputTests(unittest.TestCase):
         for build_only, ios_action in ((True, 'skip'), (False, 'upload')):
             base = {'build_only': build_only, 'ios_action': ios_action,
                     'source_sha': 'a' * 40, 'version': '0.1.0'}
-            with patch.object(b, 'approved_release_sha', return_value='a' * 40):
+            with approved_launcher() as reviewed:
                 for value in ('', '202609231407', '10000', '0'):
                     with self.subTest(build_only=build_only, value=value), self.assertRaises(ValueError):
-                        b.task_request(json.dumps({**base, 'build_number': value}))
+                        reviewed.task_request(json.dumps({**base, 'build_number': value}))
 
-                request = json.loads(b.task_request(json.dumps({**base, 'build_number': '9999'})))
+                request = json.loads(reviewed.task_request(json.dumps({**base, 'build_number': '9999'})))
                 self.assertEqual(request['build_number'], '9999')
 
     def test_full_release_requires_explicit_reviewed_source_in_every_job(self):
         base = {'build_only': False, 'ios_action': 'upload', 'build_number': '42'}
-        with patch.object(b, 'approved_release_sha', return_value='a' * 40):
+        with approved_launcher() as reviewed:
             for source in ('', 'b' * 40):
                 with self.subTest(source=source), self.assertRaises(ValueError):
-                    b.task_request(json.dumps({**base, 'source_sha': source}),
+                    reviewed.task_request(json.dumps({**base, 'source_sha': source}),
                                    allow_missing_source_sha=True)
             approved = {**base, 'source_sha': 'A' * 40}
-            self.assertEqual(json.loads(b.task_request(json.dumps(approved)))['source_sha'],
+            self.assertEqual(json.loads(reviewed.task_request(json.dumps(approved)))['source_sha'],
                              'a' * 40)
             with self.assertRaises(ValueError):
-                b.task_request(json.dumps(approved), resolved={'source_sha': 'b' * 40})
+                reviewed.task_request(json.dumps(approved), resolved={'source_sha': 'b' * 40})
 
     def test_reviewed_source_file_is_exact_and_fail_closed(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -185,15 +199,14 @@ class ReleaseInputTests(unittest.TestCase):
 
 
 class SSHLauncherTests(unittest.TestCase):
-    def test_windows_git_layouts_are_supported(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp) / 'Git'
-            ssh = root / 'usr/bin/ssh.exe'
-            ssh.parent.mkdir(parents=True)
-            ssh.touch()
-            for layout in ('cmd/git.exe', 'bin/git.exe', 'mingw64/bin/git.exe'):
-                with patch.object(b.shutil, 'which', return_value=str(root / layout)):
-                    self.assertEqual(b.ssh_executable(windows=True), ssh.as_posix())
+    def test_windows_git_layout_calculation_and_actual_host_ssh(self):
+        root = Path(tempfile.gettempdir()) / 'Git'
+        expected = root / 'usr/bin/ssh.exe'
+        for layout in ('cmd/git.exe', 'bin/git.exe', 'mingw64/bin/git.exe'):
+            self.assertIn(expected, b.git_ssh_candidates(root / layout))
+        actual = b.ssh_executable()
+        version = subprocess.run([actual, '-V'], capture_output=True, text=True, timeout=30, check=True)
+        self.assertIn('OpenSSH', version.stdout + version.stderr)
 
     def test_checkout_error_classification_never_echoes_private_log(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -205,80 +218,110 @@ class SSHLauncherTests(unittest.TestCase):
 
 
 class BootstrapExecutionTests(unittest.TestCase):
-    def test_resolve_target_writes_branch_tip_and_defaults_to_outputs(self):
-        with tempfile.TemporaryDirectory() as temp:
-            env = BootstrapTests().env()
-            env.update(RELEASE_TARGET='resolve',
-                       RELEASE_REQUEST=json.dumps({'build_only': True, 'ios_action': 'skip',
-                                                   'build_number': '42'}),
-                       GITHUB_ACTIONS='true', GITHUB_EVENT_NAME='workflow_dispatch',
-                       GITHUB_REF='refs/heads/main', GITHUB_SHA='b' * 40,
-                       RUNNER_TEMP=temp, GITHUB_OUTPUT=str(Path(temp) / 'outputs'))
-            calls = []
+    def repository(self, root):
+        source = root / 'source'
+        source.mkdir()
+        env = {**os.environ, 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull,
+               'GIT_AUTHOR_NAME': 'Launcher contract', 'GIT_AUTHOR_EMAIL': 'launcher@example.invalid',
+               'GIT_COMMITTER_NAME': 'Launcher contract', 'GIT_COMMITTER_EMAIL': 'launcher@example.invalid'}
+        def git(*args):
+            return subprocess.check_output(['git', *args], cwd=source, env=env, stderr=subprocess.PIPE, text=True).strip()
+        git('init', '-q')
+        task = source / 'scripts/task.py'
+        task.parent.mkdir()
+        task.write_text("import os,sys; print('private actual child output'); sys.exit(int(os.environ.get('CHILD_EXIT_CODE','0')))\n")
+        git('add', '.')
+        git('commit', '-qm', 'Actual reviewed source')
+        sha = git('rev-parse', 'HEAD')
+        git('update-ref', 'refs/remotes/origin/reviewed', sha)
+        return source, env, git, sha
 
-            def invoke(args, cwd, child_env, log, timeout=600):
-                calls.append(args)
-
-            output = io.StringIO()
-            with (patch.dict(b.os.environ, env, clear=True),
-                  patch.object(b, 'ssh_executable', return_value='ssh'),
-                  patch.object(b, 'invoke', side_effect=invoke),
-                  patch.object(b, 'capture', return_value='c' * 40),
-                  contextlib.redirect_stdout(output)):
-                self.assertEqual(b.main(), 0)
-
-            values = dict(line.split('=', 1) for line in Path(env['GITHUB_OUTPUT']).read_text().splitlines())
-            self.assertEqual(values['source_sha'], 'c' * 40)
+    def test_resolved_outputs_come_from_actual_git_branch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, env, git, sha = self.repository(root)
+            tip = b.capture(['git', 'rev-parse', 'refs/remotes/origin/reviewed'], source, env)
+            selected = b.select_source_sha('', tip)
+            request = json.loads(b.task_request(json.dumps({'build_only': True, 'ios_action': 'skip',
+                                                           'build_number': '42'}), allow_missing_source_sha=True))
+            output = root / 'outputs'
+            b.write_resolved_outputs(output, request, selected, b.workflow_identifier())
+            values = dict(line.split('=', 1) for line in output.read_text().splitlines())
+            self.assertEqual(values['source_sha'], sha)
             self.assertEqual(values['version'], '0.1.0')
             self.assertEqual(values['build_number'], '42')
             self.assertRegex(values['workflow_id'], r'^\d{12}$')
-            self.assertTrue(any(call[:2] == ['git', 'merge-base'] for call in calls))
-            self.assertNotIn('c' * 40, output.getvalue())
-            self.assertEqual(list(Path(temp).iterdir()), [Path(env['GITHUB_OUTPUT'])])
 
-    def test_task_output_is_never_printed_and_checkout_is_removed(self):
-        for fail in (False, True):
-            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as temp:
-                env = BootstrapTests().env()
-                # Windows Python needs the OS root even in a synthetic environment.
-                env.update({key: os.environ[key] for key in ('SystemRoot', 'SYSTEMROOT', 'SystemDrive') if key in os.environ})
-                env.update(GITHUB_ACTIONS='true', GITHUB_EVENT_NAME='workflow_dispatch',
-                           GITHUB_REF='refs/heads/main', GITHUB_SHA='b' * 40, RUNNER_TEMP=temp)
+    def test_actual_reviewed_checkout_executes_and_confines_child_output(self):
+        for exit_code in (0, 1):
+            with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source, env, git, sha = self.repository(root)
                 output = io.StringIO()
-                original_invoke = b.invoke
-                calls = []
-                def invoke(args, cwd, child_env, log, timeout=600):
-                    calls.append(args)
-                    self.assertNotIn('SOURCE_DEPLOY_KEY', child_env)
-                    if args[:2] == ['git', 'checkout']:
-                        task = Path(cwd) / 'scripts/task.py'
-                        task.parent.mkdir(parents=True)
-                        task.write_text("import sys; print('private fixture output'); sys.exit(" + str(int(fail)) + ")")
-                    elif args[0] == sys.executable:
-                        original_invoke(args, cwd, child_env, log, timeout)
-                with patch.dict(b.os.environ, env, clear=True), patch.object(b, 'ssh_executable', return_value='ssh'), patch.object(b, 'invoke', side_effect=invoke), contextlib.redirect_stdout(output):
-                    self.assertEqual(b.main(), 1 if fail else 0, output.getvalue())
-                self.assertNotIn('private fixture output', output.getvalue())
-                self.assertNotIn('example/source', output.getvalue())
-                self.assertEqual(list(Path(temp).iterdir()), [])
-                ancestor_index = next(i for i, call in enumerate(calls) if call[1:2] == ['merge-base'])
-                run_index = next(i for i, call in enumerate(calls) if call[0] == sys.executable)
-                self.assertLess(ancestor_index, run_index)
+                with (root / 'private.log').open('wb') as log, contextlib.redirect_stdout(output):
+                    script = b.checkout_reviewed_entrypoint(source, sha, PurePosixPath('scripts/task.py'), env, log)
+                    if exit_code:
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            b.invoke([sys.executable, '-I', str(script)], source, {**env, 'CHILD_EXIT_CODE': str(exit_code)}, log)
+                    else:
+                        b.invoke([sys.executable, '-I', str(script)], source, env, log)
+                self.assertNotIn('private actual child output', output.getvalue())
+                self.assertIn('private actual child output', (root / 'private.log').read_text())
+                self.assertEqual(git('rev-parse', 'HEAD'), sha)
+            self.assertFalse(root.exists())
 
-    def test_nonancestor_revision_never_executes_private_task(self):
-        with tempfile.TemporaryDirectory() as temp:
-            env = BootstrapTests().env()
-            env.update(GITHUB_ACTIONS='true', GITHUB_EVENT_NAME='workflow_dispatch',
-                       GITHUB_REF='refs/heads/main', GITHUB_SHA='b' * 40, RUNNER_TEMP=temp)
-            calls = []
-            def invoke(args, cwd, child_env, log, timeout=600):
-                calls.append(args)
-                if args[:2] == ['git', 'merge-base']:
-                    raise subprocess.CalledProcessError(1, args, stderr='private failure detail')
-            with patch.dict(b.os.environ, env, clear=True), patch.object(b, 'ssh_executable', return_value='ssh'), patch.object(b, 'invoke', side_effect=invoke), contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(b.main(), 1)
-            self.assertFalse(any(call[0] == sys.executable for call in calls))
-            self.assertEqual(list(Path(temp).iterdir()), [])
+    def test_reviewed_checkout_accepts_a_real_directory_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, env, git, sha = self.repository(root)
+            alias = root / 'source-alias'
+            alias.symlink_to(source, target_is_directory=True)
+            with (root / 'private.log').open('wb') as log:
+                script = b.checkout_reviewed_entrypoint(
+                    alias, sha, PurePosixPath('scripts/task.py'), env, log)
+            self.assertEqual(script.resolve(), (source / 'scripts/task.py').resolve())
+            self.assertEqual(git('rev-parse', 'HEAD'), sha)
+
+    def test_reviewed_checkout_still_rejects_an_escaping_entrypoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, env, git, _ = self.repository(root)
+            outside = root / 'outside.py'
+            outside.write_text("raise RuntimeError('must never execute')\n")
+            entry = source / 'scripts/escape.py'
+            entry.symlink_to(outside)
+            git('config', 'core.symlinks', 'true')
+            git('add', 'scripts/escape.py')
+            git('commit', '-qm', 'Reviewed tree with forbidden external entrypoint')
+            sha = git('rev-parse', 'HEAD')
+            git('update-ref', 'refs/remotes/origin/reviewed', sha)
+            self.assertTrue(git('ls-tree', sha, '--', 'scripts/escape.py').startswith('120000 '))
+            for flattened in (False, True):
+                with self.subTest(flattened_symlink=flattened):
+                    if flattened:
+                        git('config', 'core.symlinks', 'false')
+                        entry.unlink()  # Only the symlink created by this fixture.
+                        git('checkout-index', '--force', '--', 'scripts/escape.py')
+                        self.assertFalse(entry.is_symlink())
+                    with (root / 'private.log').open('wb') as log:
+                        with self.assertRaisesRegex(ValueError, 'Unsafe entrypoint'):
+                            b.checkout_reviewed_entrypoint(
+                                source, sha, PurePosixPath('scripts/escape.py'), env, log)
+
+    def test_actual_nonancestor_revision_cannot_materialize_entrypoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, env, git, reviewed = self.repository(root)
+            # A real later commit is not an ancestor of the pinned reviewed ref.
+            (source / 'unreviewed').write_text('Unreviewed source change')
+            git('add', '.')
+            git('commit', '-qm', 'Actual unreviewed child revision')
+            candidate = git('rev-parse', 'HEAD')
+            git('checkout', '--quiet', '--detach', reviewed)
+            with (root / 'private.log').open('wb') as log, self.assertRaises(subprocess.CalledProcessError):
+                b.checkout_reviewed_entrypoint(source, candidate, PurePosixPath('scripts/task.py'), env, log)
+            self.assertEqual(git('rev-parse', 'HEAD'), reviewed)
+            self.assertFalse((source / 'unreviewed').exists())
 
 
 if __name__ == '__main__': unittest.main()

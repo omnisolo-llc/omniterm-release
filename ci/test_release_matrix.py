@@ -3,7 +3,6 @@ import json
 from pathlib import Path
 import re
 import unittest
-from unittest.mock import patch
 
 import test_bootstrap as bootstrap_tests
 
@@ -76,7 +75,7 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertEqual(text.count('needs: resolve'), 2)
         self.assertEqual(text.count('needs: [resolve, validate]'), 2)
         publish = text.split('\n  publish:\n', 1)[1]
-        self.assertIn('needs: [resolve, validate, downloads, ios]', publish)
+        self.assertIn('needs: [resolve, validate, downloads, ios, package_signatures, apple_testflight, installation, ios_delivery]', publish)
         self.assertIn('needs.resolve.result == \'success\'', publish)
 
     def test_download_jobs_cover_every_public_distribution_group(self):
@@ -96,8 +95,8 @@ class ReleaseMatrixTests(unittest.TestCase):
                                                             'source_sha': 'a' * 40,
                                                             'version': '0.1.0', 'build_number': '1'}))
         for action in ('upload', 'submit'):
-            with patch.object(bootstrap_tests.b, 'approved_release_sha', return_value='a' * 40):
-                bootstrap_tests.b.task_request(json.dumps({'build_only': False, 'ios_action': action,
+            with bootstrap_tests.approved_launcher() as reviewed:
+                reviewed.task_request(json.dumps({'build_only': False, 'ios_action': action,
                                                             'source_sha': 'a' * 40,
                                                             'version': '0.1.0', 'build_number': '1'}))
 
@@ -108,8 +107,8 @@ class ReleaseMatrixTests(unittest.TestCase):
 
     def test_every_job_retains_only_encrypted_diagnostics(self):
         text = (ROOT / '.github/workflows/release.yml').read_text()
-        for name in ('verify', 'validate', 'downloads', 'ios', 'publish'):
-            job = re.split(r'\n  [a-z]+:\n', text.split(f'\n  {name}:\n')[1], maxsplit=1)[0]
+        for name in ('integration', 'verify', 'validate', 'downloads', 'ios', 'package_signatures', 'apple_testflight', 'installation', 'ios_delivery', 'publish'):
+            job = re.split(r'\n  [a-z_]+:\n', text.split(f'\n  {name}:\n')[1], maxsplit=1)[0]
             with self.subTest(job=name):
                 self.assertIn('DIAGNOSTICS_PUBLIC_KEY:', job)
                 self.assertIn('path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed', job)
@@ -127,12 +126,11 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertTrue(downloads.strip().endswith("|| ''") or "|| ''" in downloads)
 
         # Build-only verification, validate, and publish jobs must not receive SIGNING_CONFIG
-        for job_name in ('verify', 'validate', 'publish'):
-            job_text = re.split(r'\n  [a-z]+:\n', text.split(f'\n  {job_name}:\n')[1], maxsplit=1)[0]
+        for job_name in ('integration', 'installation', 'verify', 'validate', 'publish'):
+            job_text = re.split(r'\n  [a-z_]+:\n', text.split(f'\n  {job_name}:\n')[1], maxsplit=1)[0]
             self.assertNotIn('SIGNING_CONFIG:', job_text, f'{job_name} must not expose signing secrets')
             self.assertNotIn('id-token: write', job_text, f'{job_name} must not grant OIDC token permissions')
 
         # iOS delivery receives target-scoped iOS signing configuration in app-store environment
         ios_text = text.split('\n  ios:\n')[1].split('\n  publish:\n')[0]
         self.assertIn('SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG || secrets.SIGNING_CONFIG }}', ios_text)
-
