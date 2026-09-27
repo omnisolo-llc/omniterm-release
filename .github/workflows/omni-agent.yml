@@ -1,0 +1,82 @@
+name: Omni Agent Native Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-agent:
+    if: github.ref == 'refs/heads/main'
+    environment: downloads
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x86_64
+            target: linux
+          - runner: ubuntu-24.04-arm
+            platform: linux-aarch64
+            target: linux
+          - runner: macos-15-intel
+            platform: darwin-x86_64
+            target: macos
+          - runner: macos-15
+            platform: darwin-aarch64
+            target: macos
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Read the pinned agent source
+        id: approved
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re
+          value = json.loads(pathlib.Path('ci/approved_agent_source.json').read_text())
+          assert set(value) == {'source_sha', 'source_branch', 'version'}
+          assert re.fullmatch('[0-9a-f]{40}', value['source_sha'])
+          assert re.fullmatch(r'release/omni-agent-[A-Za-z0-9.-]+', value['source_branch'])
+          assert re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', value['version'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              for key, data in value.items():
+                  stream.write(key + '=' + data + '\n')
+          PY
+      - name: Build actual private source on the matching native runner
+        run: python3 ci/bootstrap.py
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_REQUEST: '{"build_only":true,"source_sha":"${{ steps.approved.outputs.source_sha }}","version":"${{ steps.approved.outputs.version }}","build_number":"1","ios_action":"skip"}'
+          RESOLVED_SOURCE_SHA: ${{ steps.approved.outputs.source_sha }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ steps.approved.outputs.source_branch }}
+          SOURCE_ENTRYPOINT: scripts/release/agent_entrypoint.py
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.OMNI_AGENT_DIAGNOSTICS_PUBLIC_KEY }}
+          OMNI_AGENT_PLATFORM: ${{ matrix.platform }}
+          OMNI_AGENT_OUTPUT: ${{ runner.temp }}/agent-release
+      - name: Retain only the compiled agent binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-${{ matrix.platform }}
+          path: ${{ runner.temp }}/agent-release/omniterm-agent-${{ matrix.platform }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Retain encrypted diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-diagnostics-${{ matrix.platform }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
+          if-no-files-found: ignore
+          retention-days: 1
+          compression-level: 0
