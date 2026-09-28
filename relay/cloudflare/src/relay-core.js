@@ -5,6 +5,10 @@
 import { FrameDecoder, encodeFrame } from './connector-wire.js';
 import { scopeId, equalBytes, readBoundedJson } from './security.js';
 import { issueCloudflareTurn, turnConfigured, MAX_TURN_TTL } from './cloudflare-turn.js';
+import {
+  authorizedBrowserOrigin, browserTicketCorsHeaders, BROWSER_RELAY_PROTOCOL,
+  issueBrowserTicket as mintBrowserTicket,
+} from './browser-tickets.js';
 
 export { scopeId, equalBytes, readBoundedJson };
 
@@ -20,7 +24,7 @@ export const OPEN = 1;
 export function nativeConnectorRoute(path) {
   return (
     path === '/v1/connectors/stream' ||
-    /^\/internal\/v1\/connectors\/[A-Za-z0-9_-]{1,128}\/(route|dial-stream|dial-datagram|turn-credentials)$/.test(path)
+    /^\/internal\/v1\/connectors\/[A-Za-z0-9_-]{1,128}\/(route|dial-stream|dial-datagram|turn-credentials|browser-ticket)$/.test(path)
   );
 }
 
@@ -32,7 +36,7 @@ export function nativeConnectorId(request) {
   }
   return (
     url.pathname.match(
-      /^\/internal\/v1\/connectors\/([A-Za-z0-9_-]{1,128})\/(route|dial-stream|dial-datagram|turn-credentials)$/
+      /^\/internal\/v1\/connectors\/([A-Za-z0-9_-]{1,128})\/(route|dial-stream|dial-datagram|turn-credentials|browser-ticket)$/
     )?.[1] ?? null
   );
 }
@@ -53,6 +57,28 @@ export class RelayCore {
   // Overridden by each deployment's authentication policy.
   authorizeWorkload(request) {
     return true;
+  }
+
+  upgradeResponse(pair, request) {
+    const protocols = request?.headers.get('sec-websocket-protocol')?.split(',').map(value => value.trim()) ?? [];
+    const headers = protocols.includes(BROWSER_RELAY_PROTOCOL)
+      ? { 'sec-websocket-protocol': BROWSER_RELAY_PROTOCOL }
+      : undefined;
+    return new Response(null, { status: 101, webSocket: pair.client, headers });
+  }
+
+  async createBrowserTicket(request, connectorId) {
+    if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+    if (new URL(request.url).search) return json({ error: 'relay_credentials_require_headers' }, 400);
+    if (request.body) return json({ error: 'invalid_browser_ticket_request' }, 400);
+    const origin = authorizedBrowserOrigin(request, this.env, true);
+    if (!origin) return json({ error: 'origin_forbidden' }, 403);
+    const scope = request.headers.get('x-native-relay-public-scope');
+    let issued;
+    try { issued = await mintBrowserTicket(this.state?.storage, { connectorId, origin, scope }); }
+    catch { return json({ error: 'browser_ticket_unavailable' }, 503); }
+    if (!issued) return json({ error: 'browser_ticket_unavailable' }, 503);
+    return Response.json(issued, { headers: { ...browserTicketCorsHeaders(origin), pragma: 'no-cache' } });
   }
 
   // Hook: verify Hello frame and return registration record { connector_id, tenant_id, ... }
@@ -244,7 +270,7 @@ export class RelayCore {
     pair.socket.addEventListener('close', () => this.closeAgent(agent));
     pair.socket.addEventListener('error', () => this.closeAgent(agent));
     this.send(agent, { type: 'HelloChallenge', nonce: agent.nonce });
-    return new Response(null, { status: 101, webSocket: pair.client });
+    return this.upgradeResponse(pair, request);
   }
 
   async agentMessage(agent, bytes) {
@@ -414,7 +440,7 @@ export class RelayCore {
         this.handleClientControl(pending.agent, pending.stream, event.data, close);
       } else close('connector_dial_not_ready');
     });
-    return new Response(null, { status: 101, webSocket: pair.client });
+    return this.upgradeResponse(pair, request);
   }
 
   async beginDial(connectorId, text, socket, pending, close) {
@@ -576,11 +602,12 @@ export class RelayCore {
       return this.acceptAgent(request, requestedId);
     }
     const match = path.match(
-      /^\/internal\/v1\/connectors\/([A-Za-z0-9_-]{1,128})\/(route|dial-stream|dial-datagram|turn-credentials)$/
+      /^\/internal\/v1\/connectors\/([A-Za-z0-9_-]{1,128})\/(route|dial-stream|dial-datagram|turn-credentials|browser-ticket)$/
     );
     if (!match) return json({ error: 'not_found' }, 404);
-    if (!this.authorizeWorkload(request)) return json({ error: 'unauthorized' }, 401);
+    if (!await this.authorizeWorkload(request)) return json({ error: 'unauthorized' }, 401);
     const [, connectorId, operation] = match;
+    if (operation === 'browser-ticket') return this.createBrowserTicket(request, connectorId);
     if (operation === 'turn-credentials') return this.turnCredentials(request, connectorId);
     if (operation === 'dial-datagram') return json({ error: 'authenticated_relay_required' }, 403);
     if (operation === 'route') {

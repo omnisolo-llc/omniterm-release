@@ -7,6 +7,16 @@ import {
   nativeConnectorId,
 } from './relay.js';
 import { timingSafeEqual, validateRelayToken } from './security.js';
+import {
+  authorizedBrowserOrigin,
+  browserTicketCorsHeaders,
+  browserTicketPreflight,
+  parseBrowserTicketProtocols,
+} from './browser-tickets.js';
+
+const browserTicketRoute = /^\/internal\/v1\/connectors\/[A-Za-z0-9_-]{1,128}\/browser-ticket$/;
+const browserDialRoute = /^\/internal\/v1\/connectors\/[A-Za-z0-9_-]{1,128}\/dial-stream$/;
+const bearerToken = request => /^Bearer ([\x21-\x7e]{10,256})$/.exec(request.headers.get('authorization') || '')?.[1] ?? null;
 
 export { FreeNativeConnectorRelay as NativeConnectorRelay };
 
@@ -22,6 +32,15 @@ export default {
       });
     }
 
+    if (browserTicketRoute.test(url.pathname) && request.method === 'OPTIONS') {
+      if (url.search) {
+        return Response.json({ error: 'relay_credentials_require_headers' }, {
+          status: 400, headers: { 'cache-control': 'no-store' },
+        });
+      }
+      return browserTicketPreflight(request, env);
+    }
+
     if (nativeConnectorRoute(url.pathname)) {
       const expected = env.RELAY_AUTH_TOKEN;
       const configError = validateRelayToken(expected);
@@ -35,22 +54,41 @@ export default {
         );
       }
 
-      // Validate pre-shared token on both agent stream and client dial stream
-      const token =
-        request.headers.get('x-workload-token') || url.searchParams.get('token');
+      const ticketRoute = browserTicketRoute.test(url.pathname);
+      const offeredTicket = parseBrowserTicketProtocols(request.headers.get('sec-websocket-protocol'));
+      const browserOrigin = ticketRoute || offeredTicket.present
+        ? authorizedBrowserOrigin(request, env)
+        : null;
+      const token = ticketRoute ? bearerToken(request) : request.headers.get('x-workload-token');
 
-      if (!token) {
+      if (url.searchParams.has('token')) {
+        return Response.json({ error: 'header_authentication_required' }, {
+          status: 401, headers: { 'cache-control': 'no-store' },
+        });
+      }
+      if (ticketRoute && (request.method !== 'POST' || !browserOrigin || !token || request.body)) {
+        return Response.json({ error: 'browser_ticket_unauthorized' }, {
+          status: 401, headers: browserOrigin ? browserTicketCorsHeaders(browserOrigin) : { 'cache-control': 'no-store' },
+        });
+      }
+      if (offeredTicket.present && (!offeredTicket.valid || !browserDialRoute.test(url.pathname) ||
+          request.method !== 'GET' || request.headers.get('upgrade')?.toLowerCase() !== 'websocket' ||
+          !browserOrigin)) {
+        return Response.json({ error: 'invalid_browser_ticket' }, {
+          status: 401, headers: { 'cache-control': 'no-store' },
+        });
+      }
+      if (!token && !offeredTicket.present) {
         return Response.json(
           {
             error: 'unauthorized',
-            message:
-              'Missing relay token. Provide via x-workload-token header or ?token= query parameter.',
+            message: 'Relay token must be provided via the x-workload-token header.',
           },
           { status: 401, headers: { 'cache-control': 'no-store' } }
         );
       }
 
-      const clientTokenError = validateRelayToken(token);
+      const clientTokenError = token ? validateRelayToken(token) : null;
       if (clientTokenError) {
         return Response.json(
           {
@@ -61,7 +99,7 @@ export default {
         );
       }
 
-      if (!timingSafeEqual(token, expected)) {
+      if (token && !timingSafeEqual(token, expected)) {
         return Response.json(
           {
             error: 'unauthorized',
@@ -79,6 +117,17 @@ export default {
         );
       }
 
+      let relayRequest = request;
+      if ((ticketRoute || offeredTicket.present) && browserOrigin) {
+        const headers = new Headers(request.headers);
+        if (ticketRoute) {
+          headers.delete('authorization');
+          headers.set('x-workload-token', token);
+        }
+        headers.set('x-native-relay-browser-origin', browserOrigin);
+        relayRequest = new Request(request, { headers });
+      }
+
       if (!env.NATIVE_CONNECTORS) {
         return Response.json(
           { error: 'native_relay_unavailable' },
@@ -90,7 +139,7 @@ export default {
       const doId = env.NATIVE_CONNECTORS.idFromName(
         JSON.stringify(['free-v1', connectorId])
       );
-      return env.NATIVE_CONNECTORS.get(doId).fetch(request);
+      return env.NATIVE_CONNECTORS.get(doId).fetch(relayRequest);
     }
 
     return Response.json(

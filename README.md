@@ -56,6 +56,8 @@ Enter that same full SHA in the workflow; a blank, different, or unresolved
 approval blocks publication. Every job uses the same resolved commit. The version
 defaults to `0.1.0`. Platform job names include a UTC workflow identifier in
 `yyyymmddHHmm` format. Supply a fresh shared app build number from `1` to `9999`.
+Configure the source secrets for `ql-owo-lp/omniterm`, branch `main`, and
+`scripts/release/entrypoint.py`; the launcher rejects a different source identity.
 Leave **build_only** enabled and
 **ios_action=skip** to check Windows, Linux, macOS, Android, browser bundles, and unsigned iOS device builds
 without signing, storage credentials, or publication. Choose **verify_target** to
@@ -71,6 +73,15 @@ Set **ios_action=upload** for App Store Connect delivery, or **submit** for revi
 a full release cannot skip Apple. Automatic store release remains an explicit opt-in.
 Full Apple releases use the same shared Apple-compatible build number.
 
+Private TestFlight processing and installation happen before external acceptance;
+they never request App Store submission or automatic public availability. For
+`ios_action=submit`, the separate protected `apple_submission` job runs only after
+all required external tests succeed. It retains actual App Store Connect version
+and build evidence in private storage. Public promotion rechecks that evidence;
+missing, foreign, failed or ambiguous submission evidence prevents publication.
+A previously attempted version/build must be inspected before retrying rather
+than resubmitted blindly.
+
 The release path runs the complete source gates, stages every required download in
 a draft, verifies downloaded bytes and SHA-256 checksums, and requires a matching
 Apple delivery receipt before publication. Missing, stale, wrong-platform, or
@@ -83,6 +94,32 @@ and browser runners. Validation acquires all six artifacts from private storage
 for that exact source revision, workflow run and attempt. Missing hardware,
 incomplete results or mismatched evidence prevent certification. Build-only
 verification does not substitute for these application tests.
+
+Before promotion, three additional protected `external-tests` runners execute the
+exact Linux, macOS, and Windows acceptance inventory against the frozen candidate.
+Configure the `external-tests` environment variables
+`OMNI_EXTERNAL_CONFIG_LINUX`, `OMNI_EXTERNAL_CONFIG_MACOS`, and
+`OMNI_EXTERNAL_CONFIG_WINDOWS` as paths to private JSON configuration files.
+Each file contains only `platform` and `fixtures`: Linux fixtures name a test-only
+storage configuration file and an HTTPS redirect-test URL; macOS uses an empty
+fixtures object; Windows explicitly sets `authorize_azure_signing` to `true` and
+names a private signing configuration file containing only `SIGNING_CONFIG`.
+The Linux environment also needs a read-only `RELEASE_METADATA_READ_TOKEN` for
+the real GitHub metadata checks. These configurations supply real provider access
+and never replace the candidate, test inventory, or evidence identity. Keep each
+configuration file and referenced fixture file on its protected runner with
+owner-only access. The Linux storage fixture must be limited to release-contract
+test objects, and its redirect URL must point to a controlled HTTPS endpoint that
+returns an HTTP redirect. Configure `SOURCE_SUBMODULE_TOKEN` with read-only access
+to the approved source modules; source preflight requires this secret and the
+launcher uses it only while materializing those pinned modules.
+
+The external Linux runner needs a verified Ubuntu archive keyring, current signed
+APT metadata, and passwordless `sudo`. The macOS runner needs the genuine
+processed TestFlight build for the candidate's exact version and build number.
+The Windows runner needs the .NET 8 runtime and access to the configured Azure
+Artifact Signing provider. External evidence is stored privately for the exact
+workflow attempt; absent runners, provider access, or evidence blocks promotion.
 
 Private object storage is required for this integration evidence and the existing
 Apple signing, diagnostic retention, and upload-intent safeguards.

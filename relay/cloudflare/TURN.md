@@ -6,9 +6,11 @@ does not run coturn. The existing WebSocket relay remains available.
 
 **This endpoint is not, by itself, a complete application transport upgrade.**
 Both peers need a compatible WebRTC implementation, authenticated signaling,
-and target authorization. Existing app releases do not automatically gain TURN,
-audio, or video by enabling this setting. Leave the feature off until the peer
-integration has passed a forced-relay test on your supported clients.
+and target authorization. This kit does not provide native `/rtc-offer`
+signaling; TURN credential issuance alone does not add a WebRTC relay route.
+Existing app releases do not automatically gain TURN, audio, or video by
+enabling this setting. Leave the feature off until the peer integration has
+passed a forced-relay test on your supported clients.
 
 ## Configure your own account
 

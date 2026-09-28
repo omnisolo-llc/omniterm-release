@@ -4,6 +4,11 @@
 
 import { RelayCore, nativeConnectorRoute, nativeConnectorId, json, scopeId, OPEN } from './relay-core.js';
 import { timingSafeEqual, isValidRelayToken } from './security.js';
+import {
+  authorizedBrowserOrigin,
+  consumeBrowserTicket,
+  parseBrowserTicketProtocols,
+} from './browser-tickets.js';
 
 export { nativeConnectorRoute, nativeConnectorId };
 
@@ -13,14 +18,27 @@ export class FreeNativeConnectorRelay extends RelayCore {
     this.isFreeRelay = true;
   }
 
-  authorizeWorkload(request) {
+  async authorizeWorkload(request) {
     const expected = this.env.RELAY_AUTH_TOKEN || '';
     if (!expected || !isValidRelayToken(expected)) return false;
-    const supplied =
-      request.headers.get('x-workload-token') ||
-      new URL(request.url).searchParams.get('token');
+    const url = new URL(request.url);
+    if (url.searchParams.has('token')) return false;
+    const match = url.pathname.match(/^\/internal\/v1\/connectors\/([A-Za-z0-9_-]{1,128})\/dial-stream$/);
+    const offered = parseBrowserTicketProtocols(request.headers.get('sec-websocket-protocol'));
+    if (offered.present) {
+      if (!offered.valid || !match || request.method !== 'GET' ||
+          request.headers.get('upgrade')?.toLowerCase() !== 'websocket' ||
+          authorizedBrowserOrigin(request, this.env) !== request.headers.get('origin')) return false;
+      return (await consumeBrowserTicket(this.state?.storage, request, match[1])).valid;
+    }
+    const supplied = request.headers.get('x-workload-token');
     if (!supplied || !isValidRelayToken(supplied)) return false;
     return timingSafeEqual(supplied, expected);
+  }
+
+  async createBrowserTicket(request, connectorId) {
+    if (!authorizedBrowserOrigin(request, this.env)) return json({ error: 'origin_forbidden' }, 403);
+    return super.createBrowserTicket(request, connectorId);
   }
 
   async authorizeRegistration(connectorId, hello, agent) {

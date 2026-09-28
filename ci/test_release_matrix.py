@@ -19,10 +19,68 @@ class ReleaseMatrixTests(unittest.TestCase):
                 bootstrap_tests.b.validate(env)
                 request = {'build_only': True, 'verify_target': target, 'ios_action': 'skip',
                            'source_sha': 'a' * 40, 'build_number': '42'}
+                bootstrap_tests.b.validate_target_request(target, request)
                 self.assertNotIn('verify_target', json.loads(bootstrap_tests.b.task_request(json.dumps(request))))
         env['RELEASE_TARGET'] = 'docker'
         with self.assertRaises(ValueError):
             bootstrap_tests.b.validate(env)
+
+    def test_stage_allowlist_and_request_modes_match_the_public_protocol(self):
+        self.assertEqual(set(bootstrap_tests.b.BUILD_TARGETS), TARGETS)
+        self.assertEqual(set(bootstrap_tests.b.RELEASE_TARGETS), TARGETS | {
+            'resolve', 'integration', 'installation', 'package-signatures', 'apple-testflight',
+            'validate', 'ios-deliver', 'ios-submit', 'publication-prepare', 'external-tests',
+            'publish',
+        })
+        release = {'build_only': False, 'ios_action': 'submit'}
+        for target in bootstrap_tests.b.RELEASE_TARGETS - bootstrap_tests.b.BUILD_TARGETS - {'resolve'}:
+            with self.subTest(target=target), self.assertRaises(ValueError):
+                bootstrap_tests.b.validate_target_request(target, {'build_only': True, 'ios_action': 'skip'})
+        bootstrap_tests.b.validate_target_request('ios-submit', release)
+        with self.assertRaises(ValueError):
+            bootstrap_tests.b.validate_target_request('ios-submit', {**release, 'ios_action': 'upload'})
+        with self.assertRaises(ValueError):
+            bootstrap_tests.b.validate_target_request('windows', {
+                'build_only': True, 'verify_target': 'linux', 'ios_action': 'skip',
+            })
+
+    def test_private_source_jobs_are_limited_to_the_canonical_builder(self):
+        text = (ROOT / '.github/workflows/release.yml').read_text()
+        names = ('resolve', 'integration', 'verify', 'validate', 'downloads', 'ios',
+                 'package_signatures', 'apple_testflight', 'installation', 'ios_delivery',
+                 'publication_prepare', 'external_tests', 'apple_submission', 'publish')
+        for name in names:
+            job = re.split(r'\n  [a-z_]+:\n', text.split(f'\n  {name}:\n', 1)[1], maxsplit=1)[0]
+            with self.subTest(job=name):
+                self.assertIn("github.repository == 'omnisolo-llc/omniterm-release'", job)
+
+    def test_source_jobs_forward_the_optional_pinned_submodule_credential(self):
+        text = (ROOT / '.github/workflows/release.yml').read_text()
+        resolve = re.split(r'\n  [a-z_]+:\n', text.split('\n  resolve:\n', 1)[1], maxsplit=1)[0]
+        self.assertIn('SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}', resolve)
+        names = ('integration', 'verify', 'validate', 'downloads', 'ios',
+                 'package_signatures', 'apple_testflight', 'installation', 'ios_delivery',
+                 'publication_prepare', 'external_tests', 'apple_submission', 'publish')
+        for name in names:
+            job = re.split(r'\n  [a-z_]+:\n', text.split(f'\n  {name}:\n', 1)[1], maxsplit=1)[0]
+            with self.subTest(job=name):
+                self.assertIn('SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}', job)
+
+    def test_external_acceptance_targets_have_exact_protected_provider_routes(self):
+        text = (ROOT / '.github/workflows/release.yml').read_text()
+        external = text.split('\n  external_tests:\n', 1)[1].split('\n  apple_submission:\n', 1)[0]
+        for platform in ('linux', 'macos', 'windows'):
+            with self.subTest(platform=platform):
+                self.assertIn('- platform: ' + platform + '\n', external)
+                self.assertIn('config_variable: OMNI_EXTERNAL_CONFIG_' + platform.upper(), external)
+                self.assertIn('runner: omniterm-release-' + platform, external)
+        self.assertIn('environment: external-tests', external)
+        self.assertIn('id-token: write', external)
+        self.assertIn('OMNI_EXTERNAL_CONFIG_FILE: ${{ vars[matrix.config_variable] }}', external)
+        self.assertIn('RELEASE_METADATA_READ_TOKEN', external)
+        self.assertNotIn('SIGNING_CONFIG:', external)
+        self.assertIn("grep -Eq '^ID=\"?ubuntu\"?$' /etc/os-release", external)
+        self.assertIn('Microsoft\\.NETCore\\.App 8\\.', external)
 
     def test_build_only_matrix_contains_all_six_platforms(self):
         text = (ROOT / '.github/workflows/release.yml').read_text()
@@ -75,7 +133,8 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertEqual(text.count('needs: resolve'), 2)
         self.assertEqual(text.count('needs: [resolve, validate]'), 2)
         publish = text.split('\n  publish:\n', 1)[1]
-        self.assertIn('needs: [resolve, validate, downloads, ios, package_signatures, apple_testflight, installation, ios_delivery]', publish)
+        self.assertIn('needs: [resolve, validate, downloads, ios, package_signatures, apple_testflight, installation, ios_delivery, publication_prepare, external_tests, apple_submission]', publish)
+        self.assertIn("needs.external_tests.result == 'success'", publish)
         self.assertIn('needs.resolve.result == \'success\'', publish)
 
     def test_download_jobs_cover_every_public_distribution_group(self):
@@ -100,6 +159,39 @@ class ReleaseMatrixTests(unittest.TestCase):
                                                             'source_sha': 'a' * 40,
                                                             'version': '0.1.0', 'build_number': '1'}))
 
+    def test_automatic_public_release_is_submit_only_and_boolean(self):
+        with self.assertRaises(ValueError):
+            bootstrap_tests.b.task_request(json.dumps({
+                'build_only': True, 'ios_action': 'skip', 'automatic_release': True,
+                'source_sha': 'a' * 40, 'build_number': '42',
+            }))
+        with self.assertRaises(ValueError):
+            bootstrap_tests.b.task_request(json.dumps({
+                'build_only': False, 'ios_action': 'upload', 'automatic_release': True,
+                'source_sha': 'a' * 40, 'version': '0.1.0', 'build_number': '42',
+            }))
+        with self.assertRaises(ValueError):
+            bootstrap_tests.b.task_request(json.dumps({
+                'build_only': False, 'ios_action': 'submit', 'automatic_release': 'true',
+                'source_sha': 'a' * 40, 'version': '0.1.0', 'build_number': '42',
+            }))
+        with bootstrap_tests.approved_launcher() as reviewed:
+            request = reviewed.task_request(json.dumps({
+                'build_only': False, 'ios_action': 'submit', 'automatic_release': True,
+                'source_sha': 'a' * 40, 'version': '0.1.0', 'build_number': '42',
+            }))
+            self.assertIs(json.loads(request)['automatic_release'], True)
+
+    def test_optional_self_hosted_relay_kit_selection_is_boolean(self):
+        base = {'build_only': True, 'ios_action': 'skip',
+                'source_sha': 'a' * 40, 'build_number': '42'}
+        for value in ('false', None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                bootstrap_tests.b.task_request(json.dumps({**base, 'include_selfhost': value}))
+        request = json.loads(bootstrap_tests.b.task_request(
+            json.dumps({**base, 'include_selfhost': False})))
+        self.assertIs(request['include_selfhost'], False)
+
     def test_apple_job_can_write_its_delivery_receipt(self):
         text = (ROOT / '.github/workflows/release.yml').read_text().split('\n  ios:\n')[1].split('\n  publish:\n')[0]
         self.assertIn('contents: write', text)
@@ -107,7 +199,7 @@ class ReleaseMatrixTests(unittest.TestCase):
 
     def test_every_job_retains_only_encrypted_diagnostics(self):
         text = (ROOT / '.github/workflows/release.yml').read_text()
-        for name in ('integration', 'verify', 'validate', 'downloads', 'ios', 'package_signatures', 'apple_testflight', 'installation', 'ios_delivery', 'publish'):
+        for name in ('integration', 'verify', 'validate', 'downloads', 'ios', 'package_signatures', 'apple_testflight', 'installation', 'ios_delivery', 'publication_prepare', 'external_tests', 'apple_submission', 'publish'):
             job = re.split(r'\n  [a-z_]+:\n', text.split(f'\n  {name}:\n')[1], maxsplit=1)[0]
             with self.subTest(job=name):
                 self.assertIn('DIAGNOSTICS_PUBLIC_KEY:', job)

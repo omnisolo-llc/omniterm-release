@@ -88,13 +88,23 @@ class WorkflowOrderingTests(unittest.TestCase):
     def test_publication_requires_every_download_and_successful_apple_delivery(self):
         workflow = (Path(__file__).resolve().parent.parent / '.github/workflows/release.yml').read_text()
         publish = workflow.split('\n  publish:\n', 1)[1]
-        self.assertIn('needs: [resolve, validate, downloads, ios, package_signatures, apple_testflight, installation, ios_delivery]', publish)
+        self.assertIn('needs: [resolve, validate, downloads, ios, package_signatures, apple_testflight, installation, ios_delivery, publication_prepare, external_tests, apple_submission]', publish)
         # No partial release can be published after any platform fails or is skipped.
-        expected = ("if: ${{ !cancelled() && github.ref == 'refs/heads/main' "
-                    "&& !inputs.build_only && needs.resolve.result == 'success' && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.ios.result == 'success' && needs.package_signatures.result == 'success' && needs.apple_testflight.result == 'success' && needs.installation.result == 'success' && needs.ios_delivery.result == 'success' }}")
+        expected = ("if: ${{ !cancelled() && github.repository == 'omnisolo-llc/omniterm-release' "
+                    "&& github.ref == 'refs/heads/main' "
+                    "&& !inputs.build_only && needs.resolve.result == 'success' && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.ios.result == 'success' && needs.package_signatures.result == 'success' && needs.apple_testflight.result == 'success' && needs.installation.result == 'success' && needs.ios_delivery.result == 'success' && needs.publication_prepare.result == 'success' && needs.external_tests.result == 'success' && (inputs.ios_action == 'upload' || needs.apple_submission.result == 'success') }}")
         self.assertIn(expected, publish)
         self.assertIn("needs.ios.result == 'success'", publish)
         self.assertIn('environment: public-release', publish)
+
+    def test_public_submission_waits_for_accepted_candidate(self):
+        workflow = (Path(__file__).resolve().parent.parent / '.github/workflows/release.yml').read_text()
+        apple = workflow.split('\n  apple_submission:\n', 1)[1].split('\n  publish:\n', 1)[0]
+        self.assertIn('needs: [resolve, validate, ios_delivery, publication_prepare, external_tests]', apple)
+        self.assertIn("inputs.ios_action == 'submit'", apple)
+        self.assertIn("needs.external_tests.result == 'success'", apple)
+        self.assertIn('RELEASE_TARGET: ios-submit', apple)
+        self.assertIn('environment: app-store', apple)
 
 
 class VerificationTests(unittest.TestCase):
@@ -269,6 +279,16 @@ class BootstrapExecutionTests(unittest.TestCase):
                 self.assertIn('private actual child output', (root / 'private.log').read_text())
                 self.assertEqual(git('rev-parse', 'HEAD'), sha)
             self.assertFalse(root.exists())
+
+    def test_submodule_credential_is_added_only_to_private_task_environment(self):
+        env = {'PATH': '/trusted/bin', 'SOURCE_SUBMODULE_TOKEN': 'private-read-token'}
+        token = env.pop('SOURCE_SUBMODULE_TOKEN')
+
+        self.assertNotIn('SOURCE_SUBMODULE_TOKEN', env)
+        task_env = b.private_task_environment(env, token)
+        self.assertEqual(task_env['SOURCE_SUBMODULE_TOKEN'], token)
+        self.assertNotIn('SOURCE_SUBMODULE_TOKEN', env)
+        self.assertEqual(task_env['PATH'], env['PATH'])
 
     def test_reviewed_checkout_accepts_a_real_directory_alias(self):
         with tempfile.TemporaryDirectory() as directory:

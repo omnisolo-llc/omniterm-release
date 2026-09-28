@@ -15,6 +15,10 @@ add WebRTC support to an old client or agent. Test compatible peers before enabl
 it. The linked guide explains free-tier limits, direct-first routing and why
 customer-owned traffic is not an OmniTerm relay charge.
 
+This public kit does not expose native RTC offer signaling or advertise a
+WebRTC relay transport. TURN credential issuance remains separate from the
+WebSocket relay path.
+
 ## Requirements and free-tier limits
 
 Use your own Cloudflare account, Git, and Node.js 22 or newer (Node.js 24 LTS is a
@@ -120,12 +124,21 @@ The registration WebSocket route is `/v1/connectors/stream` and requires one
 the protocol requests; the Worker alone is not an SSH server. Use the installed
 agent's configuration help for its endpoint and credential settings.
 
-Token authentication accepts the `x-workload-token` header or a `token` query
-parameter. Prefer the header where supported. Browser WebSocket clients may
-require a query token: URLs containing it are credentials and must not be shared
-or captured in request logs. Relay authentication does not replace SSH host-key
-verification or target-host authentication. Destination hostnames and routing
-metadata are visible to the relay; do not describe the relay as hiding all metadata.
+Native clients send the shared workload secret in the `x-workload-token` header.
+Browser clients first POST to
+`/internal/v1/connectors/CONNECTOR_ID/browser-ticket` with
+`Authorization: Bearer <workload-token>` and an allowed `Origin`. Configure
+`NATIVE_RELAY_BROWSER_ORIGINS` as a comma-separated list of exact HTTPS origins
+in Wrangler variables. The response contains a 30-second, one-use ticket; pass
+it only in the WebSocket subprotocol list together with `omni-relay.v1`. The
+server returns only `omni-relay.v1` as the negotiated protocol. Workload secrets
+and tickets are not accepted in URL query strings. Relay authentication does
+not replace SSH host-key verification or target-host authentication. Destination
+hostnames and routing metadata are visible to the relay; do not describe the
+relay as hiding all metadata. Treat each ticket as a bearer credential: do not
+persist it or include it in application, proxy, tracing, or error logs. Redact
+`Sec-WebSocket-Protocol`, `Authorization`, and `x-workload-token` from request
+logging.
 
 Datagram relay is not supported by this free kit. Agent IDs must be unique within
 your deployment. A Worker restart or deployment can interrupt in-memory sessions;

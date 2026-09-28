@@ -18,3 +18,4 @@ new_sqlite_classes = ["NativeConnectorRelay"]
 # Explicit opt-in only after issuer configuration and a real relay-only peer test.
 # Issuer secrets belong in Wrangler secrets, not here.
 RELAY_TURN_ENABLED = "false"
+# Add exact browser application HTTPS origins to NATIVE_RELAY_BROWSER_ORIGINS.
