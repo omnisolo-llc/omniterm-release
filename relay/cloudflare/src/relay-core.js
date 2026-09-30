@@ -3,6 +3,7 @@
 // Shared byte-routing engine; subclasses supply admission and accounting policy.
 
 import { FrameDecoder, encodeFrame } from './connector-wire.js';
+import { emptyBody } from './public-contract.js';
 import { scopeId, equalBytes, readBoundedJson } from './security.js';
 import { issueCloudflareTurn, turnConfigured, MAX_TURN_TTL } from './cloudflare-turn.js';
 import {
@@ -70,7 +71,7 @@ export class RelayCore {
   async createBrowserTicket(request, connectorId) {
     if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
     if (new URL(request.url).search) return json({ error: 'relay_credentials_require_headers' }, 400);
-    if (request.body) return json({ error: 'invalid_browser_ticket_request' }, 400);
+    if (!await emptyBody(request)) return json({ error: 'invalid_browser_ticket_request' }, 400);
     const origin = authorizedBrowserOrigin(request, this.env, true);
     if (!origin) return json({ error: 'origin_forbidden' }, 403);
     const scope = request.headers.get('x-native-relay-public-scope');
@@ -357,7 +358,7 @@ export class RelayCore {
         stream.ready = true;
         try {
           if (stream.socket.readyState !== OPEN) throw Error('client_closed');
-          stream.socket.send(JSON.stringify({ status: 'ready', stream_id: stream.id }));
+          stream.socket.send(JSON.stringify({ status: 'ready', stream_id: stream.id, admission_id: stream.admissionId }));
         } catch {
           this.closeStream(agent, stream, 'client_closed');
         }
@@ -412,6 +413,7 @@ export class RelayCore {
         } catch {}
       }
     };
+    pending.close = close;
     pending.timer = setTimeout(() => close('connector_dial_expired'), 10_000);
     pair.socket.addEventListener('close', () => close('client_closed'));
     pair.socket.addEventListener('error', () => close('client_error'));
@@ -476,6 +478,7 @@ export class RelayCore {
     }
     const stream = {
       id: this.nextStream++,
+      admissionId: crypto.randomUUID(),
       socket,
       ready: false,
       closed: false,

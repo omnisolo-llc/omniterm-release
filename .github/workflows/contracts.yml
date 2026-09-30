@@ -35,3 +35,33 @@ jobs:
           python -m unittest discover -s ci -p 'test_*.py'
           node --test ci/test_sealed_diagnostics.cjs
           npm test --prefix relay/cloudflare
+
+  first-party-moq:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Test the first-party MoQT control and cutoff API
+        run: |
+          npm ci --prefix relay/moq
+          npm test --prefix relay/moq
+
+  native-relay-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+      - name: Test the self-hosted native relay package contract
+        run: |
+          npm ci --prefix relay/native
+          node --test --test-concurrency=1 ci/test_native_relay_contract.mjs

@@ -30,7 +30,7 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertEqual(set(bootstrap_tests.b.RELEASE_TARGETS), TARGETS | {
             'resolve', 'integration', 'installation', 'package-signatures', 'apple-testflight',
             'validate', 'ios-deliver', 'ios-submit', 'publication-prepare', 'external-tests',
-            'publish',
+            'external-windows-signing', 'publish',
         })
         release = {'build_only': False, 'ios_action': 'submit'}
         for target in bootstrap_tests.b.RELEASE_TARGETS - bootstrap_tests.b.BUILD_TARGETS - {'resolve'}:
@@ -48,7 +48,8 @@ class ReleaseMatrixTests(unittest.TestCase):
         text = (ROOT / '.github/workflows/release.yml').read_text()
         names = ('resolve', 'integration', 'verify', 'validate', 'downloads', 'ios',
                  'package_signatures', 'apple_testflight', 'installation', 'ios_delivery',
-                 'publication_prepare', 'external_tests', 'apple_submission', 'publish')
+                 'publication_prepare', 'external_tests', 'external_windows_signing',
+                 'apple_submission', 'publish')
         for name in names:
             job = re.split(r'\n  [a-z_]+:\n', text.split(f'\n  {name}:\n', 1)[1], maxsplit=1)[0]
             with self.subTest(job=name):
@@ -60,7 +61,8 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertIn('SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}', resolve)
         names = ('integration', 'verify', 'validate', 'downloads', 'ios',
                  'package_signatures', 'apple_testflight', 'installation', 'ios_delivery',
-                 'publication_prepare', 'external_tests', 'apple_submission', 'publish')
+                 'publication_prepare', 'external_tests', 'external_windows_signing',
+                 'apple_submission', 'publish')
         for name in names:
             job = re.split(r'\n  [a-z_]+:\n', text.split(f'\n  {name}:\n', 1)[1], maxsplit=1)[0]
             with self.subTest(job=name):
@@ -68,19 +70,99 @@ class ReleaseMatrixTests(unittest.TestCase):
 
     def test_external_acceptance_targets_have_exact_protected_provider_routes(self):
         text = (ROOT / '.github/workflows/release.yml').read_text()
-        external = text.split('\n  external_tests:\n', 1)[1].split('\n  apple_submission:\n', 1)[0]
+        external = text.split('\n  external_tests:\n', 1)[1].split('\n  external_windows_signing:\n', 1)[0]
         for platform in ('linux', 'macos', 'windows'):
             with self.subTest(platform=platform):
                 self.assertIn('- platform: ' + platform + '\n', external)
                 self.assertIn('config_variable: OMNI_EXTERNAL_CONFIG_' + platform.upper(), external)
+                self.assertIn('guard_config_variable: OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_' + platform.upper(), external)
                 self.assertIn('runner: omniterm-release-' + platform, external)
         self.assertIn('environment: external-tests', external)
-        self.assertIn('id-token: write', external)
+        self.assertIn('permissions:\n      contents: read', external)
+        self.assertNotIn('id-token: write', external)
         self.assertIn('OMNI_EXTERNAL_CONFIG_FILE: ${{ vars[matrix.config_variable] }}', external)
+        self.assertIn('OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_FILE: ${{ vars[matrix.guard_config_variable] }}', external)
         self.assertIn('RELEASE_METADATA_READ_TOKEN', external)
         self.assertNotIn('SIGNING_CONFIG:', external)
         self.assertIn("grep -Eq '^ID=\"?ubuntu\"?$' /etc/os-release", external)
+        self.assertIn('pkg-config --exists gio-unix-2.0', external)
+        self.assertIn('x86_64-w64-mingw32-gcc', external)
+        self.assertIn('x86_64-w64-mingw32-g++', external)
         self.assertIn('Microsoft\\.NETCore\\.App 8\\.', external)
+
+    def test_windows_signing_acceptance_has_a_separate_protected_oidc_stage(self):
+        text = (ROOT / '.github/workflows/release.yml').read_text()
+        job = text.split('\n  external_windows_signing:\n', 1)[1].split('\n  apple_submission:\n', 1)[0]
+        self.assertIn('needs: [resolve, publication_prepare]', job)
+        self.assertIn('environment: external-windows-signing', job)
+        self.assertIn("runs-on: [self-hosted, 'omniterm-release-windows']", job)
+        self.assertIn('id-token: write', job)
+        self.assertIn('permissions:\n      contents: read\n      id-token: write', job)
+        self.assertIn('OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_FILE: ${{ vars.OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_FILE }}', job)
+        self.assertIn('OMNI_EXTERNAL_PLATFORM: windows-signing', job)
+        self.assertIn('STORAGE_CONFIG:', job)
+        self.assertIn('GH_TOKEN:', job)
+        self.assertIn('WINDOWS_SIGNING_CONFIG', job)
+        self.assertIn('RELEASE_TARGET: external-windows-signing', job)
+        publish = text.split('\n  publish:\n', 1)[1]
+        self.assertIn("needs.external_windows_signing.result == 'success'", publish)
+        apple = text.split('\n  apple_submission:\n', 1)[1].split('\n  publish:\n', 1)[0]
+        self.assertIn('external_windows_signing', apple)
+
+    def test_linux_provider_and_oidc_fixtures_are_separate_and_required(self):
+        documentation = (ROOT / 'README.md').read_text()
+        for value in (
+                'OMNI_EXTERNAL_CONFIG_LINUX.fixtures.live_share_provider_environment_file',
+                'OMNI_EXTERNAL_CONFIG_LINUX.fixtures.production_oidc_environment_file',
+                'production_oidc_environment_file',
+                'live_share_provider_environment_file', 'mode `0600`',
+                'LIVE_SHARE_SFU_ENABLED', 'CLOUDFLARE_SFU_APP_ID',
+                'CLOUDFLARE_SFU_APP_SECRET', 'LIVE_SHARE_MOQ_ENABLED',
+                'CLOUDFLARE_MOQ_ACCOUNT_ID', 'CLOUDFLARE_MOQ_API_TOKEN',
+                'exactly these six string fields', 'No extra fields are accepted',
+                'isolated Playwright owner environment', '`require_all`',
+                'Missing or invalid provider configuration prevents the Linux evidence',
+                'Apple submission and public promotion remain blocked'):
+            with self.subTest(value=value):
+                self.assertIn(value, documentation)
+        for value in (
+                'OMNI_E2E_EDGE_URL', 'OMNI_E2E_IDENTITY_URL',
+                'OMNI_E2E_IDENTITY_WORKLOAD_TOKEN', 'OMNI_E2E_OIDC_ISSUER_URL',
+                'OMNI_E2E_OIDC_AUTHORIZATION_ENDPOINT', 'OMNI_E2E_OIDC_REDIRECT_URI',
+                'OMNI_E2E_OIDC_CLIENT_ID', 'OMNI_E2E_OIDC_EXPECTED_SUBJECT_ID',
+                'OMNI_E2E_OIDC_TENANT_ID', 'OMNI_E2E_OIDC_STORAGE_STATE',
+                'exactly these ten string fields',
+                'separate owner-only JSON settings file',
+                'owner-only Playwright storage-state JSON file',
+                'state object may contain only `cookies` and `origins`',
+                'separate from the SFU/MoQ provider file',
+                'distinct guarded OIDC owner within the', 'existing Linux `external_tests` job',
+                '176 exact case receipts'):
+            with self.subTest(value=value):
+                self.assertIn(value, documentation)
+        linux_fixtures = documentation.split('Linux requires\n', 1)[1].split(
+            'Set `OMNI_EXTERNAL_CONFIG_LINUX.fixtures.live_share_provider_environment_file`', 1)[0]
+        self.assertIn('`live_share_provider_environment_file`', linux_fixtures)
+        self.assertIn('`production_oidc_environment_file`', linux_fixtures)
+
+        workflow = (ROOT / '.github/workflows/release.yml').read_text()
+        self.assertIn('\n  external_tests:\n', workflow)
+        self.assertNotIn('\n  production_oidc:\n', workflow)
+        external = workflow.split('\n  external_tests:\n', 1)[1].split('\n  external_windows_signing:\n', 1)[0]
+        linux = external.split('          - platform: linux\n', 1)[1].split('          - platform: macos\n', 1)[0]
+        self.assertIn('config_variable: OMNI_EXTERNAL_CONFIG_LINUX', linux)
+        self.assertIn('OMNI_EXTERNAL_CONFIG_FILE: ${{ vars[matrix.config_variable] }}', external)
+        for name in ('LIVE_SHARE_SFU_ENABLED', 'CLOUDFLARE_SFU_APP_ID',
+                     'CLOUDFLARE_SFU_APP_SECRET', 'LIVE_SHARE_MOQ_ENABLED',
+                     'CLOUDFLARE_MOQ_ACCOUNT_ID', 'CLOUDFLARE_MOQ_API_TOKEN',
+                     'OMNI_E2E_EDGE_URL', 'OMNI_E2E_IDENTITY_URL',
+                     'OMNI_E2E_IDENTITY_WORKLOAD_TOKEN', 'OMNI_E2E_OIDC_ISSUER_URL',
+                     'OMNI_E2E_OIDC_AUTHORIZATION_ENDPOINT', 'OMNI_E2E_OIDC_REDIRECT_URI',
+                     'OMNI_E2E_OIDC_CLIENT_ID', 'OMNI_E2E_OIDC_EXPECTED_SUBJECT_ID',
+                     'OMNI_E2E_OIDC_TENANT_ID', 'OMNI_E2E_OIDC_STORAGE_STATE'):
+            self.assertNotIn(name + ':', external)
+
+        self.assertIn('needs: [resolve, publication_prepare]', external)
 
     def test_build_only_matrix_contains_all_six_platforms(self):
         text = (ROOT / '.github/workflows/release.yml').read_text()
@@ -133,8 +215,12 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertEqual(text.count('needs: resolve'), 2)
         self.assertEqual(text.count('needs: [resolve, validate]'), 2)
         publish = text.split('\n  publish:\n', 1)[1]
-        self.assertIn('needs: [resolve, validate, downloads, ios, package_signatures, apple_testflight, installation, ios_delivery, publication_prepare, external_tests, apple_submission]', publish)
+        self.assertIn('needs: [resolve, validate, downloads, ios, package_signatures, apple_testflight, installation, ios_delivery, publication_prepare, external_tests, external_windows_signing, apple_submission]', publish)
         self.assertIn("needs.external_tests.result == 'success'", publish)
+        self.assertIn("needs.external_windows_signing.result == 'success'", publish)
+        apple_submission = text.split('\n  apple_submission:\n', 1)[1].split('\n  publish:\n', 1)[0]
+        self.assertIn('needs: [resolve, validate, ios_delivery, publication_prepare, external_tests, external_windows_signing]', apple_submission)
+        self.assertIn("needs.external_windows_signing.result == 'success'", apple_submission)
         self.assertIn('needs.resolve.result == \'success\'', publish)
 
     def test_download_jobs_cover_every_public_distribution_group(self):
@@ -192,6 +278,39 @@ class ReleaseMatrixTests(unittest.TestCase):
             json.dumps({**base, 'include_selfhost': False})))
         self.assertIs(request['include_selfhost'], False)
 
+    def test_full_release_requires_the_self_hosted_relay_kit(self):
+        base = {'build_only': False, 'ios_action': 'upload', 'source_sha': 'a' * 40,
+                'version': '0.1.0', 'build_number': '42'}
+        with bootstrap_tests.approved_launcher() as reviewed:
+            with self.assertRaisesRegex(ValueError, 'must include the self-hosted relay kit'):
+                reviewed.task_request(json.dumps({**base, 'include_selfhost': False}))
+            request = json.loads(reviewed.task_request(
+                json.dumps({**base, 'include_selfhost': True})))
+            self.assertIs(request['include_selfhost'], True)
+
+        text = (ROOT / '.github/workflows/release.yml').read_text()
+        option = text.split('      include_selfhost:\n', 1)[1].split('\n      ', 1)[0]
+        self.assertIn('only build-only validation may omit it', option)
+
+    def test_public_relay_locked_suites_run_in_contract_and_release_gates(self):
+        contracts = (ROOT / '.github/workflows/contracts.yml').read_text()
+        moq = contracts.split('\n  first-party-moq:\n', 1)[1].split('\n  native-relay-contract:\n', 1)[0]
+        self.assertIn('npm ci --prefix relay/moq', moq)
+        self.assertIn('npm test --prefix relay/moq', moq)
+        native = contracts.split('\n  native-relay-contract:\n', 1)[1]
+        self.assertIn('npm ci --prefix relay/native', native)
+        self.assertIn('node --test --test-concurrency=1 ci/test_native_relay_contract.mjs', native)
+
+        release = (ROOT / '.github/workflows/release.yml').read_text()
+        validate = release.split('\n  validate:\n', 1)[1].split('\n  downloads:\n', 1)[0]
+        self.assertIn("node-version: '24.21.0'", validate)
+        for command in ('npm ci --prefix relay/native',
+                        'node --test --test-concurrency=1 ci/test_native_relay_contract.mjs',
+                        'npm ci --prefix relay/moq',
+                        'npm test --prefix relay/moq'):
+            with self.subTest(command=command):
+                self.assertIn(command, validate)
+
     def test_apple_job_can_write_its_delivery_receipt(self):
         text = (ROOT / '.github/workflows/release.yml').read_text().split('\n  ios:\n')[1].split('\n  publish:\n')[0]
         self.assertIn('contents: write', text)
@@ -199,7 +318,7 @@ class ReleaseMatrixTests(unittest.TestCase):
 
     def test_every_job_retains_only_encrypted_diagnostics(self):
         text = (ROOT / '.github/workflows/release.yml').read_text()
-        for name in ('integration', 'verify', 'validate', 'downloads', 'ios', 'package_signatures', 'apple_testflight', 'installation', 'ios_delivery', 'publication_prepare', 'external_tests', 'apple_submission', 'publish'):
+        for name in ('integration', 'verify', 'validate', 'downloads', 'ios', 'package_signatures', 'apple_testflight', 'installation', 'ios_delivery', 'publication_prepare', 'external_tests', 'external_windows_signing', 'apple_submission', 'publish'):
             job = re.split(r'\n  [a-z_]+:\n', text.split(f'\n  {name}:\n')[1], maxsplit=1)[0]
             with self.subTest(job=name):
                 self.assertIn('DIAGNOSTICS_PUBLIC_KEY:', job)

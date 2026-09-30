@@ -100,7 +100,7 @@ class IntegrationHandoffTests(unittest.TestCase):
     def test_launcher_accepts_reviewed_installation_and_delivery_targets(self):
         for target in ('integration', 'installation', 'package-signatures', 'apple-testflight',
                        'validate', 'ios-deliver', 'ios-submit', 'publication-prepare',
-                       'external-tests', 'publish'):
+                       'external-tests', 'external-windows-signing', 'publish'):
             with self.subTest(target=target):
                 env = {**test_bootstrap.BootstrapTests().env(), **self.environment()}
                 request = json.dumps({'build_only': False, 'ios_action': 'submit',
@@ -114,10 +114,14 @@ class IntegrationHandoffTests(unittest.TestCase):
                 bootstrap.validate_integration_authority(env, 'ql-owo-lp/omniterm', 'main')
 
     def test_new_evidence_and_publication_targets_reject_foreign_workflow_before_checkout(self):
-        request = ('{"build_only":true,"ios_action":"skip",'
-                   '"source_sha":"' + 'a' * 40 + '","build_number":"42"}')
-        for target in ('external-tests', 'ios-submit', 'publication-prepare', 'publish'):
+        source_sha = 'a' * 40
+        for target in ('external-tests', 'external-windows-signing', 'ios-submit',
+                       'publication-prepare', 'publish'):
             with self.subTest(target=target):
+                request = json.dumps({'build_only': False,
+                                      'ios_action': 'submit' if target == 'ios-submit' else 'upload',
+                                      'source_sha': source_sha, 'version': '0.1.0',
+                                      'build_number': '42'})
                 env = {
                     **self.environment(),
                     'GITHUB_WORKFLOW_REF': 'attacker/other.yml@refs/heads/main',
@@ -131,6 +135,7 @@ class IntegrationHandoffTests(unittest.TestCase):
                 }
                 output = io.StringIO()
                 with mock.patch.dict(os.environ, env, clear=True), \
+                        mock.patch.object(bootstrap, 'approved_release_sha', return_value=source_sha), \
                         mock.patch.object(bootstrap.tempfile, 'TemporaryDirectory',
                                           side_effect=AssertionError('checkout boundary was reached')), \
                         contextlib.redirect_stdout(output):

@@ -18,7 +18,7 @@ APPLICATION_SOURCE_ENTRYPOINT = 'scripts/release/entrypoint.py'
 RELEASE_TARGETS = frozenset({
     'resolve', 'integration', 'installation', 'package-signatures', 'apple-testflight',
     'validate', 'ios-deliver', 'ios-submit', 'publication-prepare', 'external-tests',
-    'publish', *BUILD_TARGETS,
+    'external-windows-signing', 'publish', *BUILD_TARGETS,
 })
 
 
@@ -247,6 +247,8 @@ def task_request(raw, *, resolved=None, allow_missing_source_sha=False):
     include_selfhost = request.get('include_selfhost', True)
     if not isinstance(include_selfhost, bool):
         raise ValueError('include_selfhost must be a boolean')
+    if not build_only and not include_selfhost:
+        raise ValueError('A full public release must include the self-hosted relay kit')
 
     requested_sha = request.get('source_sha', '')
     approved_sha = None
