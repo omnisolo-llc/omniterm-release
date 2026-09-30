@@ -10,6 +10,26 @@ ROOT = Path(__file__).resolve().parent.parent
 TARGETS = {'linux', 'windows', 'macos', 'android', 'web', 'ios'}
 
 
+def workflow_jobs(workflow):
+    jobs_section = workflow.split('\njobs:\n', 1)[1]
+    starts = list(re.finditer(r'^  ([a-z_]+):\n', jobs_section, re.MULTILINE))
+    jobs = {}
+    for index, match in enumerate(starts):
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(jobs_section)
+        jobs[match.group(1)] = jobs_section[match.end():end]
+    return jobs
+
+
+def job_needs(job):
+    match = re.search(r'^    needs: (.+)$', job, re.MULTILINE)
+    if match is None:
+        return set()
+    value = match.group(1).strip()
+    if value.startswith('[') and value.endswith(']'):
+        return {item.strip() for item in value[1:-1].split(',') if item.strip()}
+    return {value}
+
+
 class ReleaseMatrixTests(unittest.TestCase):
     def test_launcher_accepts_every_platform_and_refuses_docker(self):
         for target in TARGETS:
@@ -59,6 +79,101 @@ class ReleaseMatrixTests(unittest.TestCase):
             job = re.split(r'\n  [a-z_]+:\n', workflow.split(f'\n  {name}:\n', 1)[1], maxsplit=1)[0]
             with self.subTest(job=name):
                 self.assertNotIn('STORAGE_CONFIG:', job)
+
+    def test_source_release_stage_contract_has_a_complete_same_run_job_graph(self):
+        workflow = (ROOT / '.github/workflows/release.yml').read_text()
+        jobs = workflow_jobs(workflow)
+        target_jobs = {
+            'resolve': 'resolve',
+            'integration': 'integration',
+            'validate': 'validate',
+            'downloads': '${{ matrix.target }}',
+            'windows_download': 'windows',
+            'ios': 'ios',
+            'package_signatures': 'package-signatures',
+            'apple_testflight': 'apple-testflight',
+            'installation': 'installation',
+            'ios_delivery': 'ios-deliver',
+            'publication_prepare': 'publication-prepare',
+            'external_tests': 'external-tests',
+            'external_windows_signing': 'external-windows-signing',
+            'apple_submission': 'ios-submit',
+            'publish': 'publish',
+        }
+        for name, target in target_jobs.items():
+            with self.subTest(job=name):
+                self.assertIn(name, jobs)
+                self.assertIn('RELEASE_TARGET: ' + target, jobs[name])
+                self.assertIn('RELEASE_REQUEST: ${{ toJSON(inputs) }}', jobs[name])
+                if name != 'resolve':
+                    for output in ('source_sha', 'version', 'build_number'):
+                        self.assertIn(
+                            f'RESOLVED_{output.upper()}: ${{{{ needs.resolve.outputs.{output} }}}}',
+                            jobs[name],
+                        )
+
+        self.assertEqual(
+            set(re.findall(r'^[ \t]*- target: ([a-z]+)$', jobs['downloads'], re.MULTILINE)),
+            {'linux', 'macos', 'android', 'web'},
+        )
+        expected_platforms = {'linux', 'macos', 'windows', 'android', 'ios', 'web'}
+        for name in ('integration', 'installation'):
+            with self.subTest(platform_matrix=name):
+                self.assertEqual(
+                    set(re.findall(r'^[ \t]*- platform: ([a-z]+)$', jobs[name], re.MULTILINE)),
+                    expected_platforms,
+                )
+
+        workflow_stage_targets = (
+            set(target_jobs.values()) - {'resolve', '${{ matrix.target }}'} - TARGETS
+        )
+        self.assertEqual(
+            workflow_stage_targets,
+            set(bootstrap_tests.b.RELEASE_TARGETS)
+            - set(bootstrap_tests.b.BUILD_TARGETS) - {'resolve'},
+        )
+
+        required_edges = {
+            'validate': {'resolve', 'integration'},
+            'downloads': {'resolve', 'validate'},
+            'windows_download': {'resolve', 'validate'},
+            'ios': {'resolve', 'validate'},
+            'package_signatures': {'resolve', 'validate', 'downloads', 'windows_download'},
+            'apple_testflight': {'resolve', 'validate', 'ios'},
+            'installation': {'resolve', 'validate', 'downloads', 'windows_download', 'ios',
+                             'package_signatures', 'apple_testflight'},
+            'ios_delivery': {'resolve', 'validate', 'ios', 'apple_testflight', 'installation'},
+            'publication_prepare': {
+                'resolve', 'validate', 'downloads', 'windows_download', 'ios', 'package_signatures',
+                'apple_testflight', 'installation', 'ios_delivery',
+            },
+            'external_tests': {'resolve', 'publication_prepare'},
+            'external_windows_signing': {'resolve', 'publication_prepare', 'external_tests'},
+            'apple_submission': {'resolve', 'validate', 'ios_delivery', 'publication_prepare',
+                                'external_tests', 'external_windows_signing'},
+            'publish': {'resolve', 'validate', 'downloads', 'windows_download', 'ios',
+                        'package_signatures', 'apple_testflight', 'installation', 'ios_delivery',
+                        'publication_prepare', 'external_tests', 'external_windows_signing',
+                        'apple_submission'},
+        }
+        for name, required in required_edges.items():
+            with self.subTest(dependencies=name):
+                self.assertTrue(required <= job_needs(jobs[name]))
+
+        stages = {'integration', 'installation', 'package_signatures', 'apple_testflight', 'ios_delivery'}
+        for name in stages:
+            with self.subTest(private_evidence=name):
+                self.assertIn('STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}', jobs[name])
+                diagnostic_uploads = re.findall(
+                    r'^[ \t]+path: (.+)$', jobs[name], re.MULTILINE)
+                self.assertEqual(diagnostic_uploads,
+                                 ['${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed'])
+
+        publish = jobs['publish']
+        for dependency in required_edges['publish'] - {'apple_submission'}:
+            with self.subTest(publication_gate=dependency):
+                self.assertIn(f"needs.{dependency}.result == 'success'", publish)
+        self.assertIn("inputs.ios_action == 'upload' || needs.apple_submission.result == 'success'", publish)
 
     def test_private_source_jobs_are_limited_to_the_canonical_builder(self):
         text = (ROOT / '.github/workflows/release.yml').read_text()
