@@ -84,7 +84,6 @@ jobs:
           SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
-          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
 
   integration:
     name: Actual ${{ matrix.platform }} application integration
@@ -177,12 +176,12 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version: '24.21.0'
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         if: matrix.target == 'android'
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '17.0.20+101'
       - name: Verify public launcher contracts
         run: |
           python -m unittest discover -s ci -p 'test_*.py'
@@ -278,7 +277,6 @@ jobs:
     name: Build ${{ matrix.target }} (${{ needs.resolve.outputs.workflow_id }})
     permissions:
       contents: write
-      id-token: write
     needs: [resolve, validate]
     if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
     environment: downloads
@@ -289,8 +287,6 @@ jobs:
         include:
           - target: linux
             runner: ubuntu-24.04
-          - target: windows
-            runner: windows-2022
           - target: macos
             runner: macos-26
           - target: android
@@ -305,30 +301,12 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version: '24.21.0'
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         if: matrix.target == 'android'
         with:
           distribution: temurin
-          java-version: '17'
-      - name: Prepare pinned Windows signing client
-        if: matrix.target == 'windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $ProgressPreference = 'SilentlyContinue'
-          $root = Join-Path $env:RUNNER_TEMP 'artifact-signing'
-          New-Item -ItemType Directory -Path $root | Out-Null
-          $archive = Join-Path $root 'client.zip'
-          Invoke-WebRequest -Uri 'https://api.nuget.org/v3-flatcontainer/microsoft.artifactsigning.client/1.0.128/microsoft.artifactsigning.client.1.0.128.nupkg' -OutFile $archive
-          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -cne '74bd7d27e6ce1051409c38d9b46bc8df0400ecd643d51ffbf2ac00869061e40b') { throw 'Artifact Signing client hash mismatch' }
-          $package = Join-Path $root 'package'
-          Expand-Archive -LiteralPath $archive -DestinationPath $package
-          $dlib = Join-Path $package 'bin/x64/Azure.CodeSigning.Dlib.dll'
-          if (-not (Test-Path -LiteralPath $dlib -PathType Leaf)) { throw 'Artifact Signing client is incomplete' }
-          if (-not ((dotnet --list-runtimes) -match '^Microsoft\.NETCore\.App 8\.')) { throw '.NET 8 runtime is required for Artifact Signing' }
-          "OMNI_WINDOWS_ARTIFACT_SIGNING_DLIB=$dlib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          java-version: '17.0.20+101'
       - name: Execute reviewed release task
         run: python ci/bootstrap.py
         env:
@@ -345,7 +323,7 @@ jobs:
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
-          SIGNING_CONFIG: ${{ matrix.target == 'windows' && (secrets.WINDOWS_SIGNING_CONFIG || secrets.SIGNING_CONFIG) || matrix.target == 'macos' && (secrets.MACOS_SIGNING_CONFIG || secrets.SIGNING_CONFIG) || matrix.target == 'android' && (secrets.ANDROID_SIGNING_CONFIG || secrets.SIGNING_CONFIG) || '' }}
+          SIGNING_CONFIG: ${{ matrix.target == 'macos' && secrets.MACOS_SIGNING_CONFIG || matrix.target == 'android' && secrets.ANDROID_SIGNING_CONFIG || '' }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
       - name: Retain encrypted diagnostics only
@@ -357,6 +335,75 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
           compression-level: 0
+
+  windows_download:
+    name: Build and sign Windows candidate (${{ needs.resolve.outputs.workflow_id }})
+    needs: [resolve, validate]
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    environment: downloads
+    runs-on: windows-2022
+    timeout-minutes: 180
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+      - name: Prepare pinned Windows signing client
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $root = Join-Path $env:RUNNER_TEMP 'artifact-signing'
+          New-Item -ItemType Directory -Path $root | Out-Null
+          $archive = Join-Path $root 'client.zip'
+          Invoke-WebRequest -Uri 'https://api.nuget.org/v3-flatcontainer/microsoft.artifactsigning.client/1.0.128/microsoft.artifactsigning.client.1.0.128.nupkg' -OutFile $archive
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -cne '74bd7d27e6ce1051409c38d9b46bc8df0400ecd643d51ffbf2ac00869061e40b') { throw 'Artifact Signing client hash mismatch' }
+          $package = Join-Path $root 'package'
+          Expand-Archive -LiteralPath $archive -DestinationPath $package
+          $dlib = Join-Path $package 'bin/x64/Azure.CodeSigning.Dlib.dll'
+          if (-not (Test-Path -LiteralPath $dlib -PathType Leaf)) { throw 'Artifact Signing client is incomplete' }
+          if (-not ((dotnet --list-runtimes) -match '^Microsoft\.NETCore\.App 8\.')) { throw '.NET 8 runtime is required for Artifact Signing' }
+          "OMNI_WINDOWS_ARTIFACT_SIGNING_DLIB=$dlib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Execute reviewed Windows release task
+        run: python ci/bootstrap.py
+        env:
+          RELEASE_TARGET: windows
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
+          SIGNING_CONFIG: ${{ secrets.WINDOWS_SIGNING_CONFIG }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
+      - name: Retain encrypted Windows build diagnostics only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostics-downloads-windows-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
+          if-no-files-found: ignore
+          retention-days: 1
+          compression-level: 0
+      - name: Remove temporary Windows signing client
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'artifact-signing'
+          if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
 
   ios:
     name: Build signed iOS candidate (${{ needs.resolve.outputs.workflow_id }})
@@ -373,7 +420,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version: '24.21.0'
       - name: Execute reviewed release task
         run: python3 ci/bootstrap.py
         env:
@@ -390,7 +437,7 @@ jobs:
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
-          SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG || secrets.SIGNING_CONFIG }}
+          SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
       - name: Retain encrypted diagnostics only
@@ -407,7 +454,7 @@ jobs:
     name: Sign verified Linux and browser candidate manifests (${{ needs.resolve.outputs.workflow_id }})
     permissions:
       contents: read
-    needs: [resolve, validate, downloads]
+    needs: [resolve, validate, downloads, windows_download]
     if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
     environment: package-signing
     runs-on: ubuntu-24.04
@@ -418,7 +465,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version: '24.21.0'
       - name: Execute reviewed release task
         run: python3 ci/bootstrap.py
         env:
@@ -463,7 +510,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version: '24.21.0'
       - name: Execute reviewed release task
         run: python3 ci/bootstrap.py
         env:
@@ -480,7 +527,7 @@ jobs:
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
-          SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG || secrets.SIGNING_CONFIG }}
+          SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
       - name: Retain encrypted diagnostics only
@@ -495,7 +542,7 @@ jobs:
 
   installation:
     name: Install and launch actual ${{ matrix.platform }} candidate
-    needs: [resolve, validate, downloads, ios, package_signatures, apple_testflight]
+    needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight]
     if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
     environment: downloads
     permissions:
@@ -581,7 +628,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version: '24.21.0'
       - name: Execute reviewed release task
         run: python3 ci/bootstrap.py
         env:
@@ -598,7 +645,7 @@ jobs:
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
-          SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG || secrets.SIGNING_CONFIG }}
+          SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
       - name: Retain encrypted diagnostics only
@@ -613,20 +660,20 @@ jobs:
 
   publication_prepare:
     name: Freeze verified candidates in private storage
-    needs: [resolve, validate, downloads, ios, package_signatures, apple_testflight, installation, ios_delivery]
+    needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation, ios_delivery]
     if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
     environment: public-release
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version: '24.21.0'
       - name: Prepare private candidate checkpoint without public mirroring
         run: python3 ci/bootstrap.py
         env:
@@ -664,6 +711,9 @@ jobs:
     timeout-minutes: 180
     permissions:
       contents: read
+    concurrency:
+      group: ${{ matrix.platform == 'linux' && 'omniterm-mcp-candidate-staging' || format('external-tests-{0}', matrix.platform) }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
@@ -671,15 +721,15 @@ jobs:
           - platform: linux
             runner: omniterm-release-linux
             config_variable: OMNI_EXTERNAL_CONFIG_LINUX
-            guard_config_variable: OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_LINUX
+            candidate_guard_variable: OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_LINUX
           - platform: macos
             runner: omniterm-release-macos
             config_variable: OMNI_EXTERNAL_CONFIG_MACOS
-            guard_config_variable: OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_MACOS
+            candidate_guard_variable: OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_MACOS
           - platform: windows
             runner: omniterm-release-windows
             config_variable: OMNI_EXTERNAL_CONFIG_WINDOWS
-            guard_config_variable: OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_WINDOWS
+            candidate_guard_variable: OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_WINDOWS
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -696,53 +746,31 @@ jobs:
           verify_output="$(dpkg --verify ubuntu-keyring)"
           test -z "$verify_output"
           sudo -n true
+          command -v gpg >/dev/null || { echo 'missing gpg required by the protected Ubuntu signature cases' >&2; exit 1; }
+          command -v gpgv >/dev/null || { echo 'missing gpgv required for Ubuntu InRelease preflight' >&2; exit 1; }
           sudo apt-get update
+          ubuntu_archive_signer=F6ECB3762474EDA9D21B7022871920D1991BC93C
           found_inrelease=0
-          for metadata in /var/lib/apt/lists/*InRelease; do
+          for metadata in /var/lib/apt/lists/*_dists_*_InRelease; do
             test -f "$metadata" && test -s "$metadata" || continue
-            case "$metadata" in
-              *archive.ubuntu.com_ubuntu_dists_*_InRelease|security.ubuntu.com_ubuntu_dists_*_InRelease)
+            if signature_status="$(gpgv --status-fd 1 --keyring "$keyring" "$metadata" 2>/dev/null)"; then
+              if grep -Eq "^\\[GNUPG:\\] VALIDSIG ${ubuntu_archive_signer} " <<< "$signature_status"; then
                 found_inrelease=1
                 break
-                ;;
-            esac
+              fi
+            fi
           done
           test "$found_inrelease" -eq 1
-      - name: Verify Linux external native toolchain
-        if: matrix.platform == 'linux'
-        run: |
-          set -euo pipefail
-          command -v g++
-          command -v pkg-config
-          pkg-config --exists gio-unix-2.0
-          command -v x86_64-w64-mingw32-gcc
-          command -v x86_64-w64-mingw32-g++
-      - name: Prepare hash-pinned Windows Artifact Signing client and dependencies
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $ProgressPreference = 'SilentlyContinue'
-          $destination = Join-Path $env:RUNNER_TEMP ('external-artifact-signing-' + [guid]::NewGuid())
-          New-Item -ItemType Directory -Path $destination | Out-Null
-          $archive = Join-Path $destination 'client.zip'
-          Invoke-WebRequest -Uri 'https://api.nuget.org/v3-flatcontainer/microsoft.artifactsigning.client/1.0.128/microsoft.artifactsigning.client.1.0.128.nupkg' -OutFile $archive -TimeoutSec 120
-          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne '74bd7d27e6ce1051409c38d9b46bc8df0400ecd643d51ffbf2ac00869061e40b') { throw 'Artifact Signing client hash mismatch' }
-          $package = Join-Path $destination 'package'
-          Expand-Archive -LiteralPath $archive -DestinationPath $package
-          $libraries = @(Get-ChildItem -LiteralPath $package -Recurse -File -Filter 'Azure.CodeSigning.Dlib.dll' | Where-Object { $_.FullName -match '[\\/](?:x64|win-x64)[\\/]' })
-          if ($libraries.Count -ne 1) { throw 'One actual x64 signing library is required' }
-          $dlib = $libraries[0].FullName
-          if (-not ((dotnet --list-runtimes) -match '^Microsoft\.NETCore\.App 8\.')) { throw '.NET 8 runtime is required' }
-          if (-not (Get-Command 'x86_64-w64-mingw32-gcc' -ErrorAction SilentlyContinue)) { throw 'MinGW x86_64 compiler is required for the Windows external filesystem guard' }
-          "OMNI_WINDOWS_ARTIFACT_SIGNING_DLIB=$dlib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Execute exact external cases against real candidate and providers
         run: python ci/bootstrap.py
         env:
           RELEASE_TARGET: external-tests
           OMNI_EXTERNAL_PLATFORM: ${{ matrix.platform }}
           OMNI_EXTERNAL_CONFIG_FILE: ${{ vars[matrix.config_variable] }}
-          OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_FILE: ${{ vars[matrix.guard_config_variable] }}
+          OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_FILE: ${{ vars[matrix.candidate_guard_variable] }}
+          OMNI_MCP_STAGING_DEPLOYMENT_CONFIG_FILE: ${{ matrix.platform == 'linux' && vars.OMNI_MCP_STAGING_DEPLOYMENT_CONFIG_FILE || '' }}
+          OMNI_MCP_STAGING_READ_TOKEN: ${{ matrix.platform == 'linux' && secrets.OMNI_MCP_STAGING_READ_TOKEN || '' }}
+          OMNI_MCP_STAGING_WRITE_TOKEN: ${{ matrix.platform == 'linux' && secrets.OMNI_MCP_STAGING_WRITE_TOKEN || '' }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
@@ -768,8 +796,8 @@ jobs:
           compression-level: 0
 
   external_windows_signing:
-    name: Actual protected Windows signing acceptance
-    needs: [resolve, publication_prepare]
+    name: Actual Windows Azure signing acceptance
+    needs: [resolve, publication_prepare, external_tests]
     if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
     environment: external-windows-signing
     runs-on: [self-hosted, 'omniterm-release-windows']
@@ -781,6 +809,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
       - name: Prepare hash-pinned Windows Artifact Signing client and dependencies
         shell: pwsh
         run: |
@@ -798,7 +829,7 @@ jobs:
           $dlib = $libraries[0].FullName
           if (-not ((dotnet --list-runtimes) -match '^Microsoft\.NETCore\.App 8\.')) { throw '.NET 8 runtime is required' }
           "OMNI_WINDOWS_ARTIFACT_SIGNING_DLIB=$dlib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-      - name: Execute exact candidate Windows signing case
+      - name: Execute only the protected Windows Azure signing case
         run: python ci/bootstrap.py
         env:
           RELEASE_TARGET: external-windows-signing
@@ -815,11 +846,11 @@ jobs:
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
-          SIGNING_CONFIG: ${{ secrets.WINDOWS_SIGNING_CONFIG || secrets.SIGNING_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          SIGNING_CONFIG: ${{ secrets.WINDOWS_SIGNING_CONFIG }}
           GH_TOKEN: ${{ github.token }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
-      - name: Retain encrypted diagnostics only
+      - name: Retain encrypted Windows diagnostics only
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -828,6 +859,12 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
           compression-level: 0
+      - name: Remove temporary Windows signing client
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path $env:RUNNER_TEMP -Directory -Filter 'external-artifact-signing-*' -ErrorAction SilentlyContinue |
+            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop }
 
   apple_submission:
     name: Submit accepted iOS candidate for public review
@@ -844,7 +881,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version: '24.21.0'
       - name: Verify external acceptance before actual Apple submission
         run: python3 ci/bootstrap.py
         env:
@@ -860,7 +897,7 @@ jobs:
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
-          SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG || secrets.SIGNING_CONFIG }}
+          SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           GH_TOKEN: ${{ github.token }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
@@ -878,8 +915,8 @@ jobs:
     name: Publish release (${{ needs.resolve.outputs.workflow_id }})
     # Wait for every validation-receipt consumer before deleting draft receipts.
     # No partial release: real post-build/provider evidence is mandatory too.
-    if: ${{ !cancelled() && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && needs.resolve.result == 'success' && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.ios.result == 'success' && needs.package_signatures.result == 'success' && needs.apple_testflight.result == 'success' && needs.installation.result == 'success' && needs.ios_delivery.result == 'success' && needs.publication_prepare.result == 'success' && needs.external_tests.result == 'success' && needs.external_windows_signing.result == 'success' && (inputs.ios_action == 'upload' || needs.apple_submission.result == 'success') }}
-    needs: [resolve, validate, downloads, ios, package_signatures, apple_testflight, installation, ios_delivery, publication_prepare, external_tests, external_windows_signing, apple_submission]
+    if: ${{ !cancelled() && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && needs.resolve.result == 'success' && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.windows_download.result == 'success' && needs.ios.result == 'success' && needs.package_signatures.result == 'success' && needs.apple_testflight.result == 'success' && needs.installation.result == 'success' && needs.ios_delivery.result == 'success' && needs.publication_prepare.result == 'success' && needs.external_tests.result == 'success' && needs.external_windows_signing.result == 'success' && (inputs.ios_action == 'upload' || needs.apple_submission.result == 'success') }}
+    needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation, ios_delivery, publication_prepare, external_tests, external_windows_signing, apple_submission]
     environment: public-release
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -891,7 +928,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version: '24.21.0'
       - name: Execute reviewed release task
         run: python3 ci/bootstrap.py
         env:

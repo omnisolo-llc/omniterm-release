@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import unittest
 from unittest import mock
 
@@ -12,6 +13,9 @@ import test_bootstrap
 
 
 class IntegrationHandoffTests(unittest.TestCase):
+    def job(self, workflow, name):
+        return re.split(r'\n  [a-z_]+:\n', workflow.split(f'\n  {name}:\n', 1)[1], maxsplit=1)[0]
+
     def environment(self):
         builder = 'omnisolo-llc/omniterm-release'
         source = 'ql-owo-lp/omniterm'
@@ -79,7 +83,7 @@ class IntegrationHandoffTests(unittest.TestCase):
         installation = workflow.split('\n  installation:\n', 1)[1].split('\n  ios_delivery:\n', 1)[0]
         apple = workflow.split('\n  ios_delivery:\n', 1)[1].split('\n  publish:\n', 1)[0]
         publish = workflow.split('\n  publish:\n', 1)[1]
-        self.assertIn('needs: [resolve, validate, downloads, ios, package_signatures, apple_testflight]', installation)
+        self.assertIn('needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight]', installation)
         self.assertIn('needs: [resolve, validate, ios, apple_testflight, installation]', apple)
         self.assertIn('RELEASE_TARGET: ios-deliver', apple)
         self.assertIn("needs.installation.result == 'success'", publish)
@@ -96,6 +100,64 @@ class IntegrationHandoffTests(unittest.TestCase):
         self.assertIn('SIGNING_CONFIG:', apple)
         paths = [line.strip() for line in installation.splitlines() if line.strip().startswith('path:')]
         self.assertEqual(paths, ['path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed'])
+
+    def test_protected_source_stages_bind_attempt_and_transport_private_evidence(self):
+        workflow = (Path(__file__).resolve().parent.parent / '.github/workflows/release.yml').read_text()
+        stages = {
+            'integration': ('integration', 'downloads', 'needs: resolve'),
+            'installation': ('installation', 'downloads',
+                             'needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight]'),
+            'package_signatures': ('package-signatures', 'package-signing',
+                                   'needs: [resolve, validate, downloads, windows_download]'),
+            'apple_testflight': ('apple-testflight', 'app-store',
+                                 'needs: [resolve, validate, ios]'),
+            'ios_delivery': ('ios-deliver', 'app-store',
+                             'needs: [resolve, validate, ios, apple_testflight, installation]'),
+        }
+        identity = (
+            'RELEASE_REQUEST: ${{ toJSON(inputs) }}',
+            'RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}',
+            'RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}',
+            'RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}',
+            'SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}',
+            'SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}',
+            'SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}',
+            'SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}',
+            'SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}',
+            'SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}',
+            'STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}',
+            'DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}',
+        )
+        for name, (target, environment, needs) in stages.items():
+            with self.subTest(stage=name):
+                job = self.job(workflow, name)
+                self.assertIn(needs, job)
+                self.assertIn("github.repository == 'omnisolo-llc/omniterm-release'", job)
+                self.assertIn('environment: ' + environment, job)
+                self.assertIn('RELEASE_TARGET: ' + target, job)
+                target_step = job.split('RELEASE_TARGET: ' + target, 1)[1].split('\n      - name:', 1)[0]
+                for field in identity:
+                    self.assertIn(field, target_step)
+
+        integration = self.job(workflow, 'integration')
+        installation = self.job(workflow, 'installation')
+        self.assertIn('OMNI_INTEGRATION_PLATFORM: ${{ matrix.platform }}', integration)
+        self.assertIn('OMNI_INTEGRATION_DEVICE: ${{ vars[matrix.device_variable] }}', integration)
+        self.assertNotIn('GH_TOKEN:', integration)
+        self.assertIn('OMNI_INSTALL_CONFIG: ${{ vars[matrix.config_variable] }}', installation)
+        self.assertIn('GH_TOKEN: ${{ github.token }}', installation)
+        for name in ('integration', 'installation'):
+            job = self.job(workflow, name)
+            self.assertNotIn('SIGNING_CONFIG:', job)
+            self.assertNotIn('id-token: write', job)
+        package_signatures = self.job(workflow, 'package_signatures')
+        self.assertIn('contents: read', package_signatures)
+        self.assertIn('GH_TOKEN: ${{ github.token }}', package_signatures)
+        self.assertIn('SIGNING_CONFIG: ${{ secrets.PACKAGE_SIGNING_CONFIG }}', package_signatures)
+        for name in ('apple_testflight', 'ios_delivery'):
+            job = self.job(workflow, name)
+            self.assertIn('GH_TOKEN: ${{ github.token }}', job)
+            self.assertIn('SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG }}', job)
 
     def test_launcher_accepts_reviewed_installation_and_delivery_targets(self):
         for target in ('integration', 'installation', 'package-signatures', 'apple-testflight',

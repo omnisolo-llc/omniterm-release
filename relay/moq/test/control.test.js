@@ -67,31 +67,31 @@ async function fixture(t) {
 test('relay creation and token admission require the control credential and exact room scope', async t => {
   const {origin, certificate} = await fixture(t);
   const unauthorized = await controlRequest(origin, certificate, '/v1/relays', {
-    body: {shareId: 'MoqScope1', epoch: 'scope-epoch-0001', expiresAt: Date.now() + 60000}, token: '',
+    body: {shareId: 'MoqScop1', epoch: 'scope-epoch-0001', expiresAt: Date.now() + 60000}, token: '',
   });
   assert.equal(unauthorized.status, 401);
 
   const created = await controlRequest(origin, certificate, '/v1/relays', {
-    body: {shareId: 'MoqScope1', epoch: 'scope-epoch-0001', expiresAt: Date.now() + 60000},
+    body: {shareId: 'MoqScop1', epoch: 'scope-epoch-0001', expiresAt: Date.now() + 60000},
   });
   assert.equal(created.status, 201);
   assert.equal(created.value.publicOrigin, origin);
   const relayId = created.value.relayId;
 
   const wrongScope = await controlRequest(origin, certificate, `/v1/relays/${relayId}/tokens`, {
-    body: {shareId: 'MoqScope2', epoch: 'scope-epoch-0001', participantId: 'viewer01',
+    body: {shareId: 'MoqScop2', epoch: 'scope-epoch-0001', participantId: 'viewer01',
       role: 'subscribe', expiresAt: Date.now() + 30000},
   });
   assert.equal(wrongScope.status, 409);
 
   const invalidRole = await controlRequest(origin, certificate, `/v1/relays/${relayId}/tokens`, {
-    body: {shareId: 'MoqScope1', epoch: 'scope-epoch-0001', participantId: 'viewer01',
+    body: {shareId: 'MoqScop1', epoch: 'scope-epoch-0001', participantId: 'viewer01',
       role: 'publish,subscribe', expiresAt: Date.now() + 30000},
   });
   assert.equal(invalidRole.status, 409);
 
   const token = await controlRequest(origin, certificate, `/v1/relays/${relayId}/tokens`, {
-    body: {shareId: 'MoqScope1', epoch: 'scope-epoch-0001', participantId: 'viewer01',
+    body: {shareId: 'MoqScop1', epoch: 'scope-epoch-0001', participantId: 'viewer01',
       role: 'subscribe', expiresAt: Date.now() + 30000},
   });
   assert.equal(token.status, 201);
@@ -103,11 +103,11 @@ test('relay creation and token admission require the control credential and exac
 test('viewer close is token-scoped and owner close acknowledges the exact remaining leases', async t => {
   const {origin, certificate} = await fixture(t);
   const created = await controlRequest(origin, certificate, '/v1/relays', {
-    body: {shareId: 'MoqClose1', epoch: 'close-epoch-0001', expiresAt: Date.now() + 60000},
+    body: {shareId: 'MoqClos1', epoch: 'close-epoch-0001', expiresAt: Date.now() + 60000},
   });
   const relayId = created.value.relayId;
   const issue = async (participantId, role) => controlRequest(origin, certificate,
-    `/v1/relays/${relayId}/tokens`, {body: {shareId: 'MoqClose1', epoch: 'close-epoch-0001',
+    `/v1/relays/${relayId}/tokens`, {body: {shareId: 'MoqClos1', epoch: 'close-epoch-0001',
       participantId, role, expiresAt: Date.now() + 30000}});
   const host = await issue('host01', 'publish');
   const viewer = await issue('viewer01', 'subscribe');
@@ -115,20 +115,20 @@ test('viewer close is token-scoped and owner close acknowledges the exact remain
   assert.equal(viewer.status, 201);
 
   const viewerClosed = await controlRequest(origin, certificate,
-    `/v1/relays/${relayId}/sessions/close`, {body: {shareId: 'MoqClose1',
+    `/v1/relays/${relayId}/sessions/close`, {body: {shareId: 'MoqClos1',
       epoch: 'close-epoch-0001', tokenIds: [viewer.value.tokenId], endRoom: false}});
   assert.equal(viewerClosed.status, 200);
   assert.deepEqual(viewerClosed.value.closedTokenIds, [viewer.value.tokenId]);
 
   const ended = await controlRequest(origin, certificate,
-    `/v1/relays/${relayId}/sessions/close`, {body: {shareId: 'MoqClose1',
+    `/v1/relays/${relayId}/sessions/close`, {body: {shareId: 'MoqClos1',
       epoch: 'close-epoch-0001', tokenIds: [host.value.tokenId], endRoom: true}});
   assert.equal(ended.status, 200);
   assert.deepEqual(ended.value.closedTokenIds, [host.value.tokenId]);
   assert.equal(ended.value.endRoom, true);
 
   const retried = await controlRequest(origin, certificate,
-    `/v1/relays/${relayId}/sessions/close`, {body: {shareId: 'MoqClose1',
+    `/v1/relays/${relayId}/sessions/close`, {body: {shareId: 'MoqClos1',
       epoch: 'close-epoch-0001', tokenIds: [host.value.tokenId], endRoom: true}});
   assert.equal(retried.status, 200);
   assert.deepEqual(retried.value.closedTokenIds, [host.value.tokenId]);

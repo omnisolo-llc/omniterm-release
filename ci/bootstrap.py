@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Generic private-source launcher. Never prints source paths or process output."""
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
 import shlex
+import signal
 import shutil
 import subprocess
 import sys
@@ -18,7 +20,8 @@ APPLICATION_SOURCE_ENTRYPOINT = 'scripts/release/entrypoint.py'
 RELEASE_TARGETS = frozenset({
     'resolve', 'integration', 'installation', 'package-signatures', 'apple-testflight',
     'validate', 'ios-deliver', 'ios-submit', 'publication-prepare', 'external-tests',
-    'external-windows-signing', 'publish', *BUILD_TARGETS,
+    'external-windows-signing',
+    'publish', *BUILD_TARGETS,
 })
 
 
@@ -34,6 +37,8 @@ def validate(env):
     branch = required(env, 'SOURCE_BRANCH')
     entry = required(env, 'SOURCE_ENTRYPOINT')
     request = json.loads(required(env, 'RELEASE_REQUEST'))
+    if not isinstance(request, dict):
+        raise ValueError('Invalid release request')
     if not re.fullmatch(r'[A-Za-z0-9-]+/[A-Za-z0-9._-]+', repo):
         raise ValueError('Invalid repository')
     if (not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/-]*', branch)
@@ -50,8 +55,14 @@ def validate(env):
             or (sha and not re.fullmatch(r'[0-9a-fA-F]{40}', sha))
             or (not sha and env.get('RELEASE_TARGET') != 'resolve')):
         raise ValueError('Invalid source revision')
+    if sha and int(sha, 16) == 0:
+        raise ValueError('Invalid source revision')
     if env.get('RELEASE_TARGET') not in RELEASE_TARGETS:
         raise ValueError('Invalid target')
+    target = env['RELEASE_TARGET']
+    if (target != 'resolve'
+            and not (target in BUILD_TARGETS and request.get('build_only') is True)):
+        required(env, 'STORAGE_CONFIG')
     for name in ('SOURCE_DEPLOY_KEY', 'SOURCE_KNOWN_HOSTS'):
         required(env, name)
     return repo, branch, path, sha.lower()
@@ -78,7 +89,11 @@ def validate_target_request(target, request):
 
 
 def private_task_environment(env, submodule_token):
-    task_env = env.copy()
+    # The reviewed private task does not need workflow command files. Keeping
+    # these paths away from it prevents accidental writes to later Actions steps.
+    workflow_command_files = {'GITHUB_ENV', 'GITHUB_OUTPUT', 'GITHUB_PATH',
+                              'GITHUB_STATE', 'GITHUB_STEP_SUMMARY'}
+    task_env = {key: value for key, value in env.items() if key not in workflow_command_files}
     if submodule_token:
         task_env['SOURCE_SUBMODULE_TOKEN'] = submodule_token
     return task_env
@@ -226,6 +241,19 @@ def task_request(raw, *, resolved=None, allow_missing_source_sha=False):
     if not isinstance(selected, str) or (selected != 'all' and selected not in BUILD_TARGETS):
         raise ValueError('Invalid verification target')
     windows_preview = request.pop('preview_windows_self_sign', False)
+    allowed_fields = {'source_sha', 'version', 'build_number', 'ios_action',
+                      'automatic_release', 'include_selfhost', 'build_only'}
+    if set(request) - allowed_fields:
+        raise ValueError('Unexpected release request field')
+    request.setdefault('source_sha', '')
+    request.setdefault('version', '0.1.0')
+    request.setdefault('ios_action', 'skip')
+    request.setdefault('automatic_release', False)
+    request.setdefault('include_selfhost', True)
+    required_fields = {'source_sha', 'version', 'build_number', 'ios_action',
+                       'automatic_release', 'include_selfhost'}
+    if not required_fields.issubset(request):
+        raise ValueError('Incomplete release request')
     if not isinstance(windows_preview, bool):
         raise ValueError('Windows preview selection must be a boolean')
     if windows_preview and (selected != 'windows' or request.get('build_only') is not True):
@@ -248,7 +276,7 @@ def task_request(raw, *, resolved=None, allow_missing_source_sha=False):
     if not isinstance(include_selfhost, bool):
         raise ValueError('include_selfhost must be a boolean')
     if not build_only and not include_selfhost:
-        raise ValueError('A full public release must include the self-hosted relay kit')
+        raise ValueError('Full releases require the self-hosted kit')
 
     requested_sha = request.get('source_sha', '')
     approved_sha = None
@@ -265,6 +293,8 @@ def task_request(raw, *, resolved=None, allow_missing_source_sha=False):
     sha = request.get('source_sha', '')
     if not isinstance(sha, str) or (sha and not re.fullmatch(r'[0-9a-fA-F]{40}', sha)):
         raise ValueError('Invalid source revision')
+    if sha and int(sha, 16) == 0:
+        raise ValueError('Invalid source revision')
     if not sha and not allow_missing_source_sha:
         raise ValueError('A source revision must be resolved before building')
     request['source_sha'] = sha.lower()
@@ -272,8 +302,9 @@ def task_request(raw, *, resolved=None, allow_missing_source_sha=False):
         raise ValueError('The resolved release source differs from the reviewed source')
 
     version = request.get('version') or '0.1.0'
-    if not isinstance(version, str) or not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', version):
-        raise ValueError('Version must use major.minor.patch')
+    if (not isinstance(version, str)
+            or not re.fullmatch(r'(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})', version)):
+        raise ValueError('Version components must use at most four digits')
     request['version'] = version
 
     build_number = request.get('build_number', '')
@@ -282,6 +313,8 @@ def task_request(raw, *, resolved=None, allow_missing_source_sha=False):
     if not re.fullmatch(r'[1-9][0-9]{0,3}', build_number):
         raise ValueError('App builds require a build number from 1-9999')
     request['build_number'] = build_number
+    if set(request) not in (required_fields, required_fields | {'build_only'}):
+        raise ValueError('Release request does not match the source contract')
     return json.dumps(request)
 
 
@@ -318,15 +351,27 @@ def seal_diagnostics(root, recipient, runner_temp):
         print('Encrypted diagnostics could not be retained.')
 
 
+@contextmanager
+def cleanup_on_termination():
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def exit_for_cleanup(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, exit_for_cleanup)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 def main():
     # Public Actions are observable. These checks are in addition to, not a
     # replacement for, environment reviewers and default-branch protections.
     env = os.environ.copy()
     recipient = env.pop('DIAGNOSTICS_PUBLIC_KEY', '')
     submodule_token = env.pop('SOURCE_SUBMODULE_TOKEN', '')
-    # Storage is optional; private implementation decides which targets need it.
     env['BUILD_CONFIG'] = env.get('BUILD_CONFIG') or '{}'
-    env['STORAGE_CONFIG'] = env.get('STORAGE_CONFIG') or '{}'
     if (env.get('GITHUB_ACTIONS') != 'true'
             or env.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'
             or env.get('GITHUB_REF') != 'refs/heads/main'):
@@ -350,8 +395,10 @@ def main():
     except Exception:
         print('Release configuration is incomplete or invalid. Contact the maintainer.')
         return 1
+    env['STORAGE_CONFIG'] = env.get('STORAGE_CONFIG') or '{}'
     os.umask(0o077)
-    with tempfile.TemporaryDirectory(prefix='private-task-', dir=required(env, 'RUNNER_TEMP')) as temp:
+    with cleanup_on_termination(), tempfile.TemporaryDirectory(
+            prefix='private-task-', dir=required(env, 'RUNNER_TEMP')) as temp:
         # Resolve Windows short-name aliases before checking containment.
         root = Path(temp).resolve()
         key, hosts = root / 'identity', root / 'known_hosts'

@@ -116,8 +116,7 @@ Each file contains only `platform` and `fixtures`. Linux requires
 owner-only `live_share_provider_environment_file` and
 `production_oidc_environment_file` settings files described below. Set
 `OMNI_EXTERNAL_CONFIG_LINUX.fixtures.live_share_provider_environment_file` to
-an absolute path to a second JSON file on the Linux runner; protect it with mode
-`0600`. Replace these placeholders while keeping exactly the six string fields
+an absolute path to a second JSON file on the Linux runner; protect it with mode `0600`. Replace these placeholders while keeping exactly these six string fields
 shown, with both enable flags set to `true`:
 
 ```json
@@ -160,9 +159,7 @@ must contain exactly these ten string fields:
 `OMNI_E2E_OIDC_CLIENT_ID`, `OMNI_E2E_OIDC_EXPECTED_SUBJECT_ID`,
 `OMNI_E2E_OIDC_TENANT_ID`, and `OMNI_E2E_OIDC_STORAGE_STATE`. The last value
 must point to a second owner-only Playwright storage-state JSON file with an active
-session for that provider; the state object may contain only `cookies` and
-`origins`. Keep the OIDC settings and browser state separate from the SFU/MoQ
-provider file. Both are sent only to the distinct guarded OIDC owner within the
+session for that provider; the state object may contain only `cookies` and `origins`. Keep the OIDC settings and browser state separate from the SFU/MoQ provider file. Both are sent only to the distinct guarded OIDC owner within the
 existing Linux `external_tests` job, never to runner-wide settings or other owners.
 Missing or invalid OIDC configuration prevents its receipt and blocks
 `require_all`.
@@ -207,6 +204,8 @@ log files for one day when a maintainer supplies a diagnostic public key; the
 private decryption key stays on the maintainer's machine. Without that key or
 private diagnostics storage, temporary logs are discarded. Workflow inputs and job status are public, so review both the
 requested revision and workflow before approving an environment.
+
+Each candidate guard must match its pinned hash and isolate the verified candidate from external test owners. On Unix runners, the installed guard and any privilege launcher must be root-owned and non-writable.
 
 ## License
 
