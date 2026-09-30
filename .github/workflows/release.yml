@@ -40,7 +40,7 @@ on:
         type: boolean
         default: false
       include_selfhost:
-        description: 'Include the distributable deployment kit (required for a full release)'
+        description: 'Full releases require the kit; only build-only validation may omit it'
         type: boolean
         default: true
 
@@ -239,6 +239,12 @@ jobs:
           node-version: '24.21.0'
       - name: Verify public launcher contracts
         run: python3 -m unittest discover -s ci -p 'test_*.py'
+      - name: Verify self-hosted relay package locks and suites
+        run: |
+          npm ci --prefix relay/native
+          node --test --test-concurrency=1 ci/test_native_relay_contract.mjs
+          npm ci --prefix relay/moq
+          npm test --prefix relay/moq
       - name: Validate reviewed source revision
         run: python3 ci/bootstrap.py
         env:

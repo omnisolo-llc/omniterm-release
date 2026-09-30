@@ -288,3 +288,91 @@ class ReleaseMatrixTests(unittest.TestCase):
         preparation = text.split('\n  publication_prepare:\n', 1)[1].split('\n  external_tests:\n', 1)[0]
         self.assertIn('permissions:\n      contents: read', preparation)
         self.assertNotIn('contents: write', preparation)
+
+    def test_linux_provider_and_oidc_fixtures_are_separate_and_required(self):
+        documentation = (ROOT / 'README.md').read_text()
+        for value in (
+                'OMNI_EXTERNAL_CONFIG_LINUX.fixtures.live_share_provider_environment_file',
+                'OMNI_EXTERNAL_CONFIG_LINUX.fixtures.production_oidc_environment_file',
+                'production_oidc_environment_file',
+                'live_share_provider_environment_file', 'mode `0600`',
+                'LIVE_SHARE_SFU_ENABLED', 'CLOUDFLARE_SFU_APP_ID',
+                'CLOUDFLARE_SFU_APP_SECRET', 'LIVE_SHARE_MOQ_ENABLED',
+                'CLOUDFLARE_MOQ_ACCOUNT_ID', 'CLOUDFLARE_MOQ_API_TOKEN',
+                'exactly these six string fields', 'No extra fields are accepted',
+                'isolated Playwright owner environment', '`require_all`',
+                'Missing or invalid provider configuration prevents the Linux evidence',
+                'Apple submission and public promotion remain blocked'):
+            with self.subTest(value=value):
+                self.assertIn(value, documentation)
+        for value in (
+                'OMNI_E2E_EDGE_URL', 'OMNI_E2E_IDENTITY_URL',
+                'OMNI_E2E_IDENTITY_WORKLOAD_TOKEN', 'OMNI_E2E_OIDC_ISSUER_URL',
+                'OMNI_E2E_OIDC_AUTHORIZATION_ENDPOINT', 'OMNI_E2E_OIDC_REDIRECT_URI',
+                'OMNI_E2E_OIDC_CLIENT_ID', 'OMNI_E2E_OIDC_EXPECTED_SUBJECT_ID',
+                'OMNI_E2E_OIDC_TENANT_ID', 'OMNI_E2E_OIDC_STORAGE_STATE',
+                'exactly these ten string fields',
+                'separate owner-only JSON settings file',
+                'owner-only Playwright storage-state JSON file',
+                'state object may contain only `cookies` and `origins`',
+                'separate from the SFU/MoQ provider file',
+                'distinct guarded OIDC owner within the', 'existing Linux `external_tests` job',
+                '176 exact case receipts'):
+            with self.subTest(value=value):
+                self.assertIn(value, documentation)
+        linux_fixtures = documentation.split('Linux requires\n', 1)[1].split(
+            'Set `OMNI_EXTERNAL_CONFIG_LINUX.fixtures.live_share_provider_environment_file`', 1)[0]
+        self.assertIn('`live_share_provider_environment_file`', linux_fixtures)
+        self.assertIn('`production_oidc_environment_file`', linux_fixtures)
+
+        workflow = (ROOT / '.github/workflows/release.yml').read_text()
+        self.assertIn('\n  external_tests:\n', workflow)
+        self.assertNotIn('\n  production_oidc:\n', workflow)
+        external = workflow.split('\n  external_tests:\n', 1)[1].split('\n  external_windows_signing:\n', 1)[0]
+        linux = external.split('          - platform: linux\n', 1)[1].split('          - platform: macos\n', 1)[0]
+        self.assertIn('config_variable: OMNI_EXTERNAL_CONFIG_LINUX', linux)
+        self.assertIn('OMNI_EXTERNAL_CONFIG_FILE: ${{ vars[matrix.config_variable] }}', external)
+        for name in ('LIVE_SHARE_SFU_ENABLED', 'CLOUDFLARE_SFU_APP_ID',
+                     'CLOUDFLARE_SFU_APP_SECRET', 'LIVE_SHARE_MOQ_ENABLED',
+                     'CLOUDFLARE_MOQ_ACCOUNT_ID', 'CLOUDFLARE_MOQ_API_TOKEN',
+                     'OMNI_E2E_EDGE_URL', 'OMNI_E2E_IDENTITY_URL',
+                     'OMNI_E2E_IDENTITY_WORKLOAD_TOKEN', 'OMNI_E2E_OIDC_ISSUER_URL',
+                     'OMNI_E2E_OIDC_AUTHORIZATION_ENDPOINT', 'OMNI_E2E_OIDC_REDIRECT_URI',
+                     'OMNI_E2E_OIDC_CLIENT_ID', 'OMNI_E2E_OIDC_EXPECTED_SUBJECT_ID',
+                     'OMNI_E2E_OIDC_TENANT_ID', 'OMNI_E2E_OIDC_STORAGE_STATE'):
+            self.assertNotIn(name + ':', external)
+
+        self.assertIn('needs: [resolve, publication_prepare]', external)
+
+    def test_full_release_requires_the_self_hosted_relay_kit(self):
+        base = {'build_only': False, 'ios_action': 'upload', 'source_sha': 'a' * 40,
+                'version': '0.1.0', 'build_number': '42'}
+        with bootstrap_tests.approved_launcher() as reviewed:
+            with self.assertRaisesRegex(ValueError, 'Full releases require the self-hosted kit'):
+                reviewed.task_request(json.dumps({**base, 'include_selfhost': False}))
+            request = json.loads(reviewed.task_request(
+                json.dumps({**base, 'include_selfhost': True})))
+            self.assertIs(request['include_selfhost'], True)
+
+        text = (ROOT / '.github/workflows/release.yml').read_text()
+        option = text.split('      include_selfhost:\n', 1)[1].split('\n      ', 1)[0]
+        self.assertIn('only build-only validation may omit it', option)
+
+    def test_public_relay_locked_suites_run_in_contract_and_release_gates(self):
+        contracts = (ROOT / '.github/workflows/contracts.yml').read_text()
+        moq = contracts.split('\n  first-party-moq:\n', 1)[1].split('\n  native-relay-contract:\n', 1)[0]
+        self.assertIn('npm ci --prefix relay/moq', moq)
+        self.assertIn('npm test --prefix relay/moq', moq)
+        native = contracts.split('\n  native-relay-contract:\n', 1)[1]
+        self.assertIn('npm ci --prefix relay/native', native)
+        self.assertIn('node --test --test-concurrency=1 ci/test_native_relay_contract.mjs', native)
+
+        release = (ROOT / '.github/workflows/release.yml').read_text()
+        validate = release.split('\n  validate:\n', 1)[1].split('\n  downloads:\n', 1)[0]
+        self.assertIn("node-version: '24.21.0'", validate)
+        for command in ('npm ci --prefix relay/native',
+                        'node --test --test-concurrency=1 ci/test_native_relay_contract.mjs',
+                        'npm ci --prefix relay/moq',
+                        'npm test --prefix relay/moq'):
+            with self.subTest(command=command):
+                self.assertIn(command, validate)

@@ -14,7 +14,7 @@ It does not require an OmniTerm backend database or access to our build system.
 For browser live-share over MoQ, deploy the first-party HTTP/3 owner from
 [relay/moq](relay/moq/README.md) and set `moq_origin` in the web deployment's
 `config.json` to that provider's HTTPS origin. Its control API and WebTransport
-data plane must use the same origin.
+data plane use the same origin.
 
 Use Node.js 24.21.0 or newer for the self-hosted relay kit. The Cloudflare guide covers installing
 the tools, deploying the Worker, creating a fresh token, and checking connections.
@@ -40,7 +40,8 @@ under **Assets** as a GitHub fallback.
 | iPhone and iPad | Signed device build delivered privately to App Store Connect; no public IPA |
 
 The release inventory contains **15 downloadable application packages**, plus
-checksums and an optional self-hosted relay kit. Docker images are excluded.
+checksums and the required self-hosted relay kit containing the Cloudflare,
+native-process, and first-party MoQ relay sources. Docker images are excluded.
 Each application download has a SHA-256 sidecar; `SHA256SUMS` covers all 15 packages.
 The Windows ZIP is portable, not an installer; its executables and libraries are
 Authenticode-signed. The macOS release application is Developer ID signed and
@@ -104,43 +105,92 @@ Before promotion, three additional protected `external-tests` runners execute th
 exact Linux, macOS, and Windows acceptance inventory against the frozen candidate.
 Configure the `external-tests` environment variables
 `OMNI_EXTERNAL_CONFIG_LINUX`, `OMNI_EXTERNAL_CONFIG_MACOS`, and
-`OMNI_EXTERNAL_CONFIG_WINDOWS` as paths to private JSON configuration files.
-Each file contains only `platform` and `fixtures`. Linux fixture keys are
-`storage_test_config_file`, `redirect_url`, `turn_test_env_file`,
-`rust_test_environment_file`, and `live_codex_environment_file`. macOS fixture keys
-are `ios_remote_host` and `ios_signing_test_env_file`; Windows uses an empty
-fixtures object. Configure `OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_LINUX`,
+`OMNI_EXTERNAL_CONFIG_WINDOWS` as paths to private JSON configuration files,
+and `OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_LINUX`,
 `OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_MACOS`, and
-`OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_WINDOWS` as paths to the corresponding
-runner's private candidate-guard configuration. Each guard must match its pinned
-hash and isolate the verified candidate from external test owners. On Unix
-runners, the installed guard and any privilege launcher must be root-owned and
-non-writable.
+`OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_WINDOWS` as paths to each runner's
+protected candidate-guard configuration.
+Each file contains only `platform` and `fixtures`. Linux requires
+`storage_test_config_file`, `redirect_url`, `turn_test_env_file`,
+`rust_test_environment_file`, and `live_codex_environment_file`, plus the
+owner-only `live_share_provider_environment_file` and
+`production_oidc_environment_file` settings files described below. Set
+`OMNI_EXTERNAL_CONFIG_LINUX.fixtures.live_share_provider_environment_file` to
+an absolute path to a second JSON file on the Linux runner; protect it with mode `0600`. Replace these placeholders while keeping exactly these six string fields
+shown, with both enable flags set to `true`:
 
-Windows Azure signing runs in the separate protected `external-windows-signing`
-environment. Configure `OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_FILE` there as the
-path to the Windows candidate-guard configuration and provide the
-`WINDOWS_SIGNING_CONFIG` secret. That job uses the protected Windows runner,
-GitHub OIDC, .NET 8, and the Azure Artifact Signing provider; the Windows
-`external-tests` fixture does not carry signing authority.
+```json
+{
+  "LIVE_SHARE_SFU_ENABLED": "true",
+  "CLOUDFLARE_SFU_APP_ID": "...",
+  "CLOUDFLARE_SFU_APP_SECRET": "...",
+  "LIVE_SHARE_MOQ_ENABLED": "true",
+  "CLOUDFLARE_MOQ_ACCOUNT_ID": "32 hexadecimal characters",
+  "CLOUDFLARE_MOQ_API_TOKEN": "..."
+}
+```
+
+The SFU app ID is 1-128 ASCII letters, digits, `_`, or `-`; its secret is
+1-4096 printable ASCII characters without spaces. The MoQ API token is 1-8192
+printable ASCII characters without spaces. No extra fields are accepted. The
+Linux and referenced provider files must remain regular, owner-only files on the
+protected runner. macOS requires `ios_remote_host` and
+`ios_signing_test_env_file`; Windows requires an empty fixtures object. The Linux
+storage fixture must be limited to release-contract test objects, and its redirect
+URL must point to a controlled HTTPS endpoint that returns an HTTP redirect. The
+provider file supplies the live SFU/MoQ owner. The TURN, Rust, and live
+MCP/Codex files provide real provider access for their exact external cases.
+
+The provider values are loaded only into the isolated Playwright owner environment
+for the SFU/MoQ live-share cases. Do not add them as runner-wide variables or to
+other fixture files. The owner-only provider file is removed after that owner
+finishes. Missing or invalid provider configuration prevents the Linux evidence
+receipt from completing; `require_all` requires all live provider results, so
+Apple submission and public promotion remain blocked.
+Azure signing credentials are available only to the separate protected
+`external-windows-signing` environment, not the Windows external-test fixture.
+
+Set `OMNI_EXTERNAL_CONFIG_LINUX.fixtures.production_oidc_environment_file` to a
+separate owner-only JSON settings file for the production OIDC browser case. It
+must contain exactly these ten string fields:
+`OMNI_E2E_EDGE_URL`, `OMNI_E2E_IDENTITY_URL`,
+`OMNI_E2E_IDENTITY_WORKLOAD_TOKEN`, `OMNI_E2E_OIDC_ISSUER_URL`,
+`OMNI_E2E_OIDC_AUTHORIZATION_ENDPOINT`, `OMNI_E2E_OIDC_REDIRECT_URI`,
+`OMNI_E2E_OIDC_CLIENT_ID`, `OMNI_E2E_OIDC_EXPECTED_SUBJECT_ID`,
+`OMNI_E2E_OIDC_TENANT_ID`, and `OMNI_E2E_OIDC_STORAGE_STATE`. The last value
+must point to a second owner-only Playwright storage-state JSON file with an active
+session for that provider; the state object may contain only `cookies` and `origins`. Keep the OIDC settings and browser state separate from the SFU/MoQ provider file. Both are sent only to the distinct guarded OIDC owner within the
+existing Linux `external_tests` job, never to runner-wide settings or other owners.
+Missing or invalid OIDC configuration prevents its receipt and blocks
+`require_all`.
+
+The current external gate requires 176 exact case receipts: 38 Python platform or
+toolchain cases, 131 Rust cases, one live MCP/Node case, four live relay/provider
+cases, one production OIDC browser case, and one Windows signing case. All receipts
+must match the candidate source, builder, run, and attempt before publication.
 
 The Linux environment also needs a read-only `RELEASE_METADATA_READ_TOKEN` for
-the real GitHub metadata checks. Keep each configuration file and referenced
-fixture file on its protected runner with owner-only access. The Linux storage
-fixture must be limited to release-contract test objects, and its redirect URL
-must point to a controlled HTTPS endpoint that returns an HTTP redirect. The
-macOS runner needs the genuine processed TestFlight build for the candidate's
-exact version and build number, plus its configured iOS signing-test host.
-Configure `SOURCE_SUBMODULE_TOKEN` with read-only access to the approved source
-modules; source preflight requires this secret and the launcher uses it only
-while materializing those pinned modules.
+the real GitHub metadata checks. These configurations supply real provider access
+and never replace the candidate, test inventory, or evidence identity. Configure
+`SOURCE_SUBMODULE_TOKEN` with read-only access to the approved source modules;
+source preflight requires this secret and the launcher uses it only while
+materializing those pinned modules.
 
 The external Linux runner needs a verified Ubuntu archive keyring, current signed
-APT metadata, and passwordless `sudo`. The macOS runner needs the genuine
-processed TestFlight build for the candidate's exact version and build number.
-The Windows runner needs the .NET 8 runtime and access to the configured Azure
-Artifact Signing provider. External evidence is stored privately for the exact
-workflow attempt; absent runners, provider access, or evidence blocks promotion.
+APT metadata, passwordless `sudo`, `g++`, `pkg-config` with `gio-unix-2.0`, and
+the `x86_64-w64-mingw32-gcc` and `x86_64-w64-mingw32-g++` cross compilers. The
+macOS runner needs the genuine processed TestFlight build for the candidate's
+exact version and build number. The Windows external-test runner needs the .NET 8
+runtime and `x86_64-w64-mingw32-gcc` on `PATH`. A separate protected
+`external-windows-signing` job uses the same dedicated Windows runner and the
+Azure Artifact Signing provider through OIDC. Configure that environment with the
+`OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_FILE` variable pointing to its private
+candidate-guard configuration and the `WINDOWS_SIGNING_CONFIG` secret. The
+signing environment uses its own guard configuration value, separate from the
+ordinary `external-tests` platform variables. Its
+candidate and signed-output digests are retained as private evidence for the exact
+workflow attempt. Missing runner, guard configuration, provider access, or signed
+receipt blocks Apple submission and publication.
 
 Private object storage is required for this integration evidence and the existing
 Apple signing, diagnostic retention, and upload-intent safeguards.
@@ -154,6 +204,8 @@ log files for one day when a maintainer supplies a diagnostic public key; the
 private decryption key stays on the maintainer's machine. Without that key or
 private diagnostics storage, temporary logs are discarded. Workflow inputs and job status are public, so review both the
 requested revision and workflow before approving an environment.
+
+Each candidate guard must match its pinned hash and isolate the verified candidate from external test owners. On Unix runners, the installed guard and any privilege launcher must be root-owned and non-writable.
 
 ## License
 
