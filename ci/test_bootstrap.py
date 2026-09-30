@@ -5,6 +5,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -69,6 +70,21 @@ class BootstrapTests(unittest.TestCase):
         del env['BUILD_CONFIG']; del env['STORAGE_CONFIG']
         self.assertEqual(b.validate(env)[-1], 'a' * 40)
 
+    def test_full_release_stages_require_private_evidence_storage(self):
+        request = {'source_sha': 'a' * 40, 'version': '0.1.0', 'build_number': '42',
+                   'build_only': False, 'ios_action': 'upload'}
+        for target in b.RELEASE_TARGETS - {'resolve'}:
+            env = self.env()
+            env['RELEASE_TARGET'] = target
+            env['RELEASE_REQUEST'] = json.dumps(request)
+            env.pop('STORAGE_CONFIG')
+            with self.subTest(target=target), self.assertRaises(ValueError):
+                b.validate(env)
+
+        build_only = self.env()
+        build_only.pop('STORAGE_CONFIG')
+        self.assertEqual(b.validate(build_only)[-1], 'a' * 40)
+
     def test_no_non_manual_execution(self):
         env = {key: value for key, value in os.environ.items() if not key.startswith(('GITHUB_', 'SOURCE_', 'RELEASE_'))}
         result = subprocess.run([sys.executable, str(Path(b.__file__))], env=env, capture_output=True, text=True, timeout=30)
@@ -88,13 +104,24 @@ class WorkflowOrderingTests(unittest.TestCase):
     def test_publication_requires_every_download_and_successful_apple_delivery(self):
         workflow = (Path(__file__).resolve().parent.parent / '.github/workflows/release.yml').read_text()
         publish = workflow.split('\n  publish:\n', 1)[1]
-        self.assertIn('needs: [resolve, validate, downloads, ios, package_signatures, apple_testflight, installation, ios_delivery]', publish)
+        self.assertIn('needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation, ios_delivery, publication_prepare, external_tests, external_windows_signing, apple_submission]', publish)
         # No partial release can be published after any platform fails or is skipped.
-        expected = ("if: ${{ !cancelled() && github.ref == 'refs/heads/main' "
-                    "&& !inputs.build_only && needs.resolve.result == 'success' && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.ios.result == 'success' && needs.package_signatures.result == 'success' && needs.apple_testflight.result == 'success' && needs.installation.result == 'success' && needs.ios_delivery.result == 'success' }}")
+        expected = ("if: ${{ !cancelled() && github.repository == 'omnisolo-llc/omniterm-release' "
+                    "&& github.ref == 'refs/heads/main' "
+                    "&& !inputs.build_only && needs.resolve.result == 'success' && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.windows_download.result == 'success' && needs.ios.result == 'success' && needs.package_signatures.result == 'success' && needs.apple_testflight.result == 'success' && needs.installation.result == 'success' && needs.ios_delivery.result == 'success' && needs.publication_prepare.result == 'success' && needs.external_tests.result == 'success' && needs.external_windows_signing.result == 'success' && (inputs.ios_action == 'upload' || needs.apple_submission.result == 'success') }}")
         self.assertIn(expected, publish)
         self.assertIn("needs.ios.result == 'success'", publish)
         self.assertIn('environment: public-release', publish)
+
+    def test_public_submission_waits_for_accepted_candidate(self):
+        workflow = (Path(__file__).resolve().parent.parent / '.github/workflows/release.yml').read_text()
+        apple = workflow.split('\n  apple_submission:\n', 1)[1].split('\n  publish:\n', 1)[0]
+        self.assertIn('needs: [resolve, validate, ios_delivery, publication_prepare, external_tests, external_windows_signing]', apple)
+        self.assertIn("inputs.ios_action == 'submit'", apple)
+        self.assertIn("needs.external_tests.result == 'success'", apple)
+        self.assertIn("needs.external_windows_signing.result == 'success'", apple)
+        self.assertIn('RELEASE_TARGET: ios-submit', apple)
+        self.assertIn('environment: app-store', apple)
 
 
 class VerificationTests(unittest.TestCase):
@@ -149,6 +176,31 @@ class ReleaseInputTests(unittest.TestCase):
         self.assertEqual(request['source_sha'], '')
         self.assertEqual(request['version'], '0.1.0')
         self.assertEqual(request['build_number'], '9')
+
+    def test_request_matches_private_version_and_self_host_contract(self):
+        build_only = {'build_only': True, 'ios_action': 'skip', 'source_sha': 'a' * 40,
+                      'version': '9999.9999.9999', 'build_number': '42',
+                      'include_selfhost': False}
+        forwarded = json.loads(b.task_request(json.dumps(build_only)))
+        self.assertEqual(forwarded['version'], '9999.9999.9999')
+        self.assertEqual(set(forwarded), {
+            'source_sha', 'version', 'build_number', 'ios_action',
+            'automatic_release', 'include_selfhost', 'build_only',
+        })
+
+        for version in ('10000.0.0', '1.10000.0', '1.0.10000', '01.0.0'):
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                b.task_request(json.dumps({**build_only, 'version': version}))
+        with self.assertRaises(ValueError):
+            b.task_request(json.dumps({**build_only, 'source_sha': '0' * 40}))
+
+        full_release = {**build_only, 'build_only': False, 'ios_action': 'upload',
+                        'include_selfhost': False}
+        with approved_launcher() as reviewed, self.assertRaises(ValueError):
+            reviewed.task_request(json.dumps(full_release))
+
+        with self.assertRaises(ValueError):
+            b.task_request(json.dumps({**build_only, 'unexpected': 'field'}))
 
     def test_explicit_source_sha_wins_over_branch_tip(self):
         requested = 'A' * 40
@@ -269,6 +321,31 @@ class BootstrapExecutionTests(unittest.TestCase):
                 self.assertIn('private actual child output', (root / 'private.log').read_text())
                 self.assertEqual(git('rev-parse', 'HEAD'), sha)
             self.assertFalse(root.exists())
+
+    def test_submodule_credential_is_added_only_to_private_task_environment(self):
+        env = {'PATH': '/trusted/bin', 'SOURCE_SUBMODULE_TOKEN': 'private-read-token',
+               'GITHUB_ENV': '/runner/command_env', 'GITHUB_OUTPUT': '/runner/command_output',
+               'GITHUB_PATH': '/runner/command_path', 'GITHUB_STATE': '/runner/command_state',
+               'GITHUB_STEP_SUMMARY': '/runner/command_summary'}
+        token = env.pop('SOURCE_SUBMODULE_TOKEN')
+
+        task_env = b.private_task_environment(env, token)
+        self.assertEqual(task_env['SOURCE_SUBMODULE_TOKEN'], token)
+        self.assertNotIn('SOURCE_SUBMODULE_TOKEN', env)
+        self.assertEqual(task_env['PATH'], env['PATH'])
+        for name in ('GITHUB_ENV', 'GITHUB_OUTPUT', 'GITHUB_PATH', 'GITHUB_STATE', 'GITHUB_STEP_SUMMARY'):
+            self.assertNotIn(name, task_env)
+
+    def test_sigterm_runs_private_directory_cleanup(self):
+        private_path = None
+        with self.assertRaises(SystemExit) as raised:
+            with b.cleanup_on_termination():
+                with tempfile.TemporaryDirectory() as directory:
+                    private_path = Path(directory)
+                    handler = signal.getsignal(signal.SIGTERM)
+                    handler(signal.SIGTERM, None)
+        self.assertEqual(raised.exception.code, 128 + signal.SIGTERM)
+        self.assertFalse(private_path.exists())
 
     def test_reviewed_checkout_accepts_a_real_directory_alias(self):
         with tempfile.TemporaryDirectory() as directory:
