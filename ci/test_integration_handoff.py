@@ -57,6 +57,8 @@ class IntegrationHandoffTests(unittest.TestCase):
                     'SOURCE_ENTRYPOINT': 'scripts/release/entrypoint.py',
                     'SOURCE_DEPLOY_KEY': 'synthetic',
                     'SOURCE_KNOWN_HOSTS': 'synthetic',
+                    'BUILD_CONFIG': '{"OMNI_ENABLE_VPN":"true"}',
+                    'STORAGE_CONFIG': '{}',
                     'RUNNER_TEMP': '/tmp',
                 }
                 with contextlib.redirect_stdout(io.StringIO()), \
@@ -80,14 +82,15 @@ class IntegrationHandoffTests(unittest.TestCase):
 
     def test_exact_candidate_installation_precedes_apple_delivery_and_publication(self):
         workflow = (Path(__file__).resolve().parent.parent / '.github/workflows/release.yml').read_text()
-        installation = workflow.split('\n  installation:\n', 1)[1].split('\n  ios_delivery:\n', 1)[0]
+        installation = workflow.split('\n  installation:\n', 1)[1].split('\n  vpn_container:\n', 1)[0]
         apple = workflow.split('\n  ios_delivery:\n', 1)[1].split('\n  publish:\n', 1)[0]
         publish = workflow.split('\n  publish:\n', 1)[1]
         self.assertIn('needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight]', installation)
-        self.assertIn('needs: [resolve, validate, ios, apple_testflight, installation]', apple)
+        self.assertIn('needs: [resolve, validate, ios, apple_testflight, installation, vpn_container]', apple)
         self.assertIn('RELEASE_TARGET: ios-deliver', apple)
         self.assertIn("needs.installation.result == 'success'", publish)
         self.assertIn("needs.ios_delivery.result == 'success'", publish)
+        self.assertIn("needs.vpn_container.result == 'success'", publish)
         self.assertIn('environment: downloads', installation)
         self.assertIn("github.repository == 'omnisolo-llc/omniterm-release'", installation)
         self.assertIn('runs-on: [self-hosted,', installation)
@@ -107,12 +110,16 @@ class IntegrationHandoffTests(unittest.TestCase):
             'integration': ('integration', 'downloads', 'needs: resolve'),
             'installation': ('installation', 'downloads',
                              'needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight]'),
+            'vpn_container': ('vpn-container', 'vpn-container',
+                              'needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation]'),
+            'managed_rtc_provider': ('managed-rtc-provider', 'managed-rtc-provider',
+                                     'needs: [resolve, publication_prepare]'),
             'package_signatures': ('package-signatures', 'package-signing',
                                    'needs: [resolve, validate, downloads, windows_download]'),
             'apple_testflight': ('apple-testflight', 'app-store',
                                  'needs: [resolve, validate, ios]'),
             'ios_delivery': ('ios-deliver', 'app-store',
-                             'needs: [resolve, validate, ios, apple_testflight, installation]'),
+                             'needs: [resolve, validate, ios, apple_testflight, installation, vpn_container]'),
         }
         identity = (
             'RELEASE_REQUEST: ${{ toJSON(inputs) }}',
@@ -149,7 +156,11 @@ class IntegrationHandoffTests(unittest.TestCase):
         for name in ('integration', 'installation'):
             job = self.job(workflow, name)
             self.assertNotIn('SIGNING_CONFIG:', job)
-            self.assertNotIn('id-token: write', job)
+            if name == 'integration':
+                self.assertNotIn('id-token: write', job)
+            else:
+                self.assertIn('id-token: write', job)
+                self.assertIn('OMNI_VPN_INSTALLATION_PROFILE_FILE:', job)
         package_signatures = self.job(workflow, 'package_signatures')
         self.assertIn('contents: read', package_signatures)
         self.assertIn('GH_TOKEN: ${{ github.token }}', package_signatures)
@@ -158,9 +169,14 @@ class IntegrationHandoffTests(unittest.TestCase):
             job = self.job(workflow, name)
             self.assertIn('GH_TOKEN: ${{ github.token }}', job)
             self.assertIn('SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG }}', job)
+        managed_rtc = self.job(workflow, 'managed_rtc_provider')
+        self.assertIn('MANAGED_RTC_PROVIDER_ENVIRONMENT_FILE:', managed_rtc)
+        self.assertIn('MANAGED_RTC_IDENTITY_FIXTURE_FILE:', managed_rtc)
+        self.assertNotIn('GH_TOKEN:', managed_rtc)
+        self.assertNotIn('SIGNING_CONFIG:', managed_rtc)
 
     def test_launcher_accepts_reviewed_installation_and_delivery_targets(self):
-        for target in ('integration', 'installation', 'package-signatures', 'apple-testflight',
+        for target in ('integration', 'installation', 'vpn-container', 'managed-rtc-provider', 'package-signatures', 'apple-testflight',
                        'validate', 'ios-deliver', 'ios-submit', 'publication-prepare',
                        'external-tests', 'external-windows-signing', 'publish'):
             with self.subTest(target=target):
@@ -170,14 +186,16 @@ class IntegrationHandoffTests(unittest.TestCase):
                                       'build_number': '42'})
                 env.update(RELEASE_TARGET=target, SOURCE_BRANCH='main',
                            SOURCE_ENTRYPOINT='scripts/release/entrypoint.py',
-                           RELEASE_REQUEST=request)
+                           RELEASE_REQUEST=request,
+                           BUILD_CONFIG='{"OMNI_ENABLE_VPN":"true"}')
                 bootstrap.validate_target_request(target, json.loads(request))
                 bootstrap.validate(env)
                 bootstrap.validate_integration_authority(env, 'ql-owo-lp/omniterm', 'main')
 
     def test_new_evidence_and_publication_targets_reject_foreign_workflow_before_checkout(self):
         source_sha = 'a' * 40
-        for target in ('external-tests', 'external-windows-signing', 'ios-submit',
+        for target in ('external-tests', 'external-windows-signing', 'vpn-container',
+                       'managed-rtc-provider', 'ios-submit',
                        'publication-prepare', 'publish'):
             with self.subTest(target=target):
                 request = json.dumps({'build_only': False,
@@ -193,6 +211,8 @@ class IntegrationHandoffTests(unittest.TestCase):
                     'SOURCE_ENTRYPOINT': 'scripts/release/entrypoint.py',
                     'SOURCE_DEPLOY_KEY': 'synthetic',
                     'SOURCE_KNOWN_HOSTS': 'synthetic',
+                    'BUILD_CONFIG': '{"OMNI_ENABLE_VPN":"true"}',
+                    'STORAGE_CONFIG': '{}',
                     'RUNNER_TEMP': '/tmp',
                 }
                 output = io.StringIO()

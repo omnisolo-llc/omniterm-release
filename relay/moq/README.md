@@ -27,6 +27,9 @@ MOQ_DATA_HOST=0.0.0.0
 MOQ_DATA_PORT=443
 MOQ_MAX_RELAYS=512
 MOQ_MAX_SESSIONS=1024
+MOQ_USAGE_URL=https://api.omniterm.dev/internal/v1/live-share/moq/usage
+MOQ_USAGE_TOKEN=<independent Worker-to-relay usage secret>
+MOQ_MANAGED_USAGE_REQUIRED=true
 ```
 
 Install the locked package and start it:
@@ -45,12 +48,22 @@ LIVE_SHARE_MOQ_PROVIDER=first_party
 LIVE_SHARE_MOQ_CONTROL_ORIGIN=https://moq.example.com
 LIVE_SHARE_MOQ_PUBLIC_ORIGIN=https://moq.example.com
 LIVE_SHARE_MOQ_CONTROL_TOKEN=<same secret as MOQ_CONTROL_TOKEN>
+LIVE_SHARE_MOQ_USAGE_ORIGIN=https://api.omniterm.dev
+LIVE_SHARE_MOQ_USAGE_TOKEN=<same secret as MOQ_USAGE_TOKEN>
+LIVE_SHARE_MOQ_MANAGED=true
 ```
 
 The public Flutter web `config.json` must set `moq_origin` to that exact HTTPS
 origin. The browser verifies the control service's provider URL against this
 deployment-owned value before opening WebTransport. Keep the management secret
-on the Worker/origin only.
+on the Worker/origin only. Keep the usage secret separate from the control
+secret and provision it only to the Worker and relay service. The relay accepts
+only the exact HTTPS usage endpoint path shown above, with no query or fragment.
+Its authenticated readiness probe fails unless the Worker confirms usage
+authority. `MOQ_MANAGED_USAGE_REQUIRED=true` additionally requires every room
+creation to carry the Worker origin and a finite byte ceiling, checks active
+owner/quota authority periodically, and closes the room on revocation, expiry,
+quota exhaustion, or an unavailable authority.
 
 ## Authorization and limits
 

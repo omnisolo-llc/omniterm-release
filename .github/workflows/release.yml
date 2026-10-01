@@ -130,6 +130,7 @@ jobs:
         run: python ci/bootstrap.py
         env:
           RELEASE_TARGET: integration
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
@@ -140,6 +141,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           OMNI_INTEGRATION_PLATFORM: ${{ matrix.platform }}
           OMNI_INTEGRATION_DEVICE: ${{ vars[matrix.device_variable] }}
@@ -190,6 +192,7 @@ jobs:
         run: python ci/bootstrap.py
         env:
           RELEASE_TARGET: ${{ matrix.target }}
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
@@ -249,6 +252,7 @@ jobs:
         run: python3 ci/bootstrap.py
         env:
           RELEASE_TARGET: validate
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -311,6 +315,7 @@ jobs:
         run: python ci/bootstrap.py
         env:
           RELEASE_TARGET: ${{ matrix.target }}
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -374,6 +379,7 @@ jobs:
         run: python ci/bootstrap.py
         env:
           RELEASE_TARGET: windows
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -425,6 +431,7 @@ jobs:
         run: python3 ci/bootstrap.py
         env:
           RELEASE_TARGET: ios
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -470,6 +477,7 @@ jobs:
         run: python3 ci/bootstrap.py
         env:
           RELEASE_TARGET: package-signatures
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -515,6 +523,7 @@ jobs:
         run: python3 ci/bootstrap.py
         env:
           RELEASE_TARGET: apple-testflight
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -544,37 +553,50 @@ jobs:
     name: Install and launch actual ${{ matrix.platform }} candidate
     needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight]
     if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
-    environment: downloads
+    environment: ${{ matrix.attestation_environment }}
     permissions:
       contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: linux
             runner: omniterm-release-linux
+            attestation_environment: vpn-installation-linux
             device_variable: OMNI_INTEGRATION_DEVICE_LINUX
             config_variable: OMNI_INSTALL_CONFIG_LINUX
+            vpn_profile_variable: OMNI_VPN_INSTALLATION_PROFILE_LINUX
           - platform: macos
             runner: omniterm-release-macos
+            attestation_environment: vpn-installation-macos
             device_variable: OMNI_INTEGRATION_DEVICE_MACOS
             config_variable: OMNI_INSTALL_CONFIG_MACOS
+            vpn_profile_variable: OMNI_VPN_INSTALLATION_PROFILE_MACOS
           - platform: windows
             runner: omniterm-release-windows
+            attestation_environment: vpn-installation-windows
             device_variable: OMNI_INTEGRATION_DEVICE_WINDOWS
             config_variable: OMNI_INSTALL_CONFIG_WINDOWS
+            vpn_profile_variable: OMNI_VPN_INSTALLATION_PROFILE_WINDOWS
           - platform: android
             runner: omniterm-release-android
+            attestation_environment: vpn-installation-android
             device_variable: OMNI_INTEGRATION_DEVICE_ANDROID
             config_variable: OMNI_INSTALL_CONFIG_ANDROID
+            vpn_profile_variable: OMNI_VPN_INSTALLATION_PROFILE_ANDROID
           - platform: ios
             runner: omniterm-release-ios
+            attestation_environment: vpn-installation-ios
             device_variable: OMNI_INTEGRATION_DEVICE_IOS
             config_variable: OMNI_INSTALL_CONFIG_IOS
+            vpn_profile_variable: OMNI_VPN_INSTALLATION_PROFILE_IOS
           - platform: web
             runner: omniterm-release-web
+            attestation_environment: downloads
             device_variable: OMNI_INTEGRATION_DEVICE_WEB
             config_variable: OMNI_INSTALL_CONFIG_WEB
+            vpn_profile_variable: OMNI_VPN_INSTALLATION_PROFILE_WEB
     runs-on: [self-hosted, '${{ matrix.runner }}']
     timeout-minutes: 180
     steps:
@@ -585,6 +607,7 @@ jobs:
         run: python ci/bootstrap.py
         env:
           RELEASE_TARGET: installation
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
@@ -601,6 +624,9 @@ jobs:
           OMNI_INTEGRATION_PLATFORM: ${{ matrix.platform }}
           OMNI_INTEGRATION_DEVICE: ${{ vars[matrix.device_variable] }}
           OMNI_INSTALL_CONFIG: ${{ vars[matrix.config_variable] }}
+          OMNI_VPN_INSTALLATION_PROFILE_FILE: ${{ vars[matrix.vpn_profile_variable] || '' }}
+          OMNI_VPN_RECEIVER_TRUSTED_JWKS_JSON: ${{ vars.OMNI_VPN_RECEIVER_TRUSTED_JWKS_JSON }}
+          OMNI_VPN_TRUSTED_GATEWAY_POLICIES_JSON: ${{ vars.OMNI_VPN_TRUSTED_GATEWAY_POLICIES_JSON }}
           OMNI_CHROMEDRIVER_PORT: ${{ vars.OMNI_CHROMEDRIVER_PORT }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
       - name: Retain encrypted installation diagnostics only
@@ -613,11 +639,84 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+  vpn_container:
+    name: Managed VPN container E2E (${{ matrix.kernel_state }})
+    needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation]
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    environment: vpn-container
+    runs-on: [self-hosted, '${{ matrix.runner }}']
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: ${{ format('vpn-container-{0}', matrix.kernel_state) }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kernel_state: present
+            runner: omniterm-release-vpn-kmod-present
+          - kernel_state: absent
+            runner: omniterm-release-vpn-kmod-absent
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify isolated Linux container prerequisites and kernel state
+        run: |
+          set -euo pipefail
+          docker info >/dev/null 2>&1
+          test -c /dev/net/tun
+          case "$OMNI_VPN_E2E_KERNEL_MODULE_STATE" in
+            present) test -d /sys/module/wireguard ;;
+            absent) test ! -d /sys/module/wireguard ;;
+            *) exit 1 ;;
+          esac
+        env:
+          OMNI_VPN_E2E_KERNEL_MODULE_STATE: ${{ matrix.kernel_state }}
+      - name: Assemble candidate client image and execute VPN route and cutoff matrix
+        run: python ci/bootstrap.py
+        env:
+          RELEASE_TARGET: vpn-container
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_VPN_E2E_KERNEL_MODULE_STATE: ${{ matrix.kernel_state }}
+          OMNITERM_VPN_E2E_PROFILE_FILE: ${{ vars.OMNITERM_VPN_E2E_PROFILE_FILE }}
+          OMNITERM_VPN_E2E_CLIENT_BASE_IMAGE: ${{ vars.OMNITERM_VPN_E2E_CLIENT_BASE_IMAGE }}
+          OMNITERM_VPN_E2E_GATEWAY_IMAGE: ${{ vars.OMNITERM_VPN_E2E_GATEWAY_IMAGE }}
+          OMNITERM_VPN_E2E_RELAY_IMAGE: ${{ vars.OMNITERM_VPN_E2E_RELAY_IMAGE }}
+          OMNITERM_VPN_E2E_RECEIVER_IMAGE: ${{ vars.OMNITERM_VPN_E2E_RECEIVER_IMAGE }}
+          OMNITERM_VPN_E2E_DNS_IMAGE: ${{ vars.OMNITERM_VPN_E2E_DNS_IMAGE }}
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          GH_TOKEN: ${{ github.token }}
+          DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
+      - name: Retain encrypted VPN diagnostics only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostics-vpn-container-${{ matrix.kernel_state }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
+          if-no-files-found: ignore
+          retention-days: 1
+          compression-level: 0
+
   ios_delivery:
     name: Deliver verified iOS candidate (${{ needs.resolve.outputs.workflow_id }})
     permissions:
       contents: write
-    needs: [resolve, validate, ios, apple_testflight, installation]
+    needs: [resolve, validate, ios, apple_testflight, installation, vpn_container]
     if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action != 'skip'
     environment: app-store
     runs-on: macos-26
@@ -633,6 +732,7 @@ jobs:
         run: python3 ci/bootstrap.py
         env:
           RELEASE_TARGET: ios-deliver
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -660,7 +760,7 @@ jobs:
 
   publication_prepare:
     name: Freeze verified candidates in private storage
-    needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation, ios_delivery]
+    needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation, vpn_container, ios_delivery]
     if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
     environment: public-release
     runs-on: ubuntu-24.04
@@ -678,6 +778,7 @@ jobs:
         run: python3 ci/bootstrap.py
         env:
           RELEASE_TARGET: publication-prepare
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
@@ -702,9 +803,53 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+  managed_rtc_provider:
+    name: Live managed RTC provider acceptance (${{ needs.resolve.outputs.workflow_id }})
+    needs: [resolve, publication_prepare]
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    environment: managed-rtc-provider
+    runs-on: [self-hosted, 'omniterm-release-managed-rtc']
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Execute live provider cases and store OIDC-attested evidence privately
+        run: python ci/bootstrap.py
+        env:
+          RELEASE_TARGET: managed-rtc-provider
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          MANAGED_RTC_PROVIDER_ENVIRONMENT_FILE: ${{ vars.MANAGED_RTC_PROVIDER_ENVIRONMENT_FILE }}
+          MANAGED_RTC_IDENTITY_FIXTURE_FILE: ${{ vars.MANAGED_RTC_IDENTITY_FIXTURE_FILE }}
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
+      - name: Retain encrypted diagnostics only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostics-managed-rtc-provider-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
+          if-no-files-found: ignore
+          retention-days: 1
+          compression-level: 0
+
   external_tests:
     name: Actual ${{ matrix.platform }} artifact and provider acceptance
-    needs: [resolve, publication_prepare]
+    needs: [resolve, publication_prepare, managed_rtc_provider]
     if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
     environment: external-tests
     runs-on: [self-hosted, '${{ matrix.runner }}']
@@ -766,6 +911,7 @@ jobs:
         run: python ci/bootstrap.py
         env:
           RELEASE_TARGET: external-tests
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           OMNI_EXTERNAL_PLATFORM: ${{ matrix.platform }}
           OMNI_EXTERNAL_CONFIG_FILE: ${{ vars[matrix.config_variable] }}
           OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_FILE: ${{ vars[matrix.candidate_guard_variable] }}
@@ -834,6 +980,7 @@ jobs:
         run: python ci/bootstrap.py
         env:
           RELEASE_TARGET: external-windows-signing
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           OMNI_EXTERNAL_PLATFORM: windows-signing
           OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_FILE: ${{ vars.OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_FILE }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
@@ -869,8 +1016,8 @@ jobs:
 
   apple_submission:
     name: Submit accepted iOS candidate for public review
-    needs: [resolve, validate, ios_delivery, publication_prepare, external_tests, external_windows_signing]
-    if: ${{ !cancelled() && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action == 'submit' && needs.external_tests.result == 'success' && needs.external_windows_signing.result == 'success' }}
+    needs: [resolve, validate, ios_delivery, publication_prepare, vpn_container, external_tests, external_windows_signing]
+    if: ${{ !cancelled() && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action == 'submit' && needs.vpn_container.result == 'success' && needs.external_tests.result == 'success' && needs.external_windows_signing.result == 'success' }}
     environment: app-store
     runs-on: macos-26
     timeout-minutes: 180
@@ -887,6 +1034,7 @@ jobs:
         run: python3 ci/bootstrap.py
         env:
           RELEASE_TARGET: ios-submit
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
@@ -916,8 +1064,8 @@ jobs:
     name: Publish release (${{ needs.resolve.outputs.workflow_id }})
     # Wait for every validation-receipt consumer before deleting draft receipts.
     # No partial release: real post-build/provider evidence is mandatory too.
-    if: ${{ !cancelled() && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && needs.resolve.result == 'success' && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.windows_download.result == 'success' && needs.ios.result == 'success' && needs.package_signatures.result == 'success' && needs.apple_testflight.result == 'success' && needs.installation.result == 'success' && needs.ios_delivery.result == 'success' && needs.publication_prepare.result == 'success' && needs.external_tests.result == 'success' && needs.external_windows_signing.result == 'success' && (inputs.ios_action == 'upload' || needs.apple_submission.result == 'success') }}
-    needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation, ios_delivery, publication_prepare, external_tests, external_windows_signing, apple_submission]
+    if: ${{ !cancelled() && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && needs.resolve.result == 'success' && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.windows_download.result == 'success' && needs.ios.result == 'success' && needs.package_signatures.result == 'success' && needs.apple_testflight.result == 'success' && needs.installation.result == 'success' && needs.vpn_container.result == 'success' && needs.ios_delivery.result == 'success' && needs.publication_prepare.result == 'success' && needs.managed_rtc_provider.result == 'success' && needs.external_tests.result == 'success' && needs.external_windows_signing.result == 'success' && (inputs.ios_action == 'upload' || needs.apple_submission.result == 'success') }}
+    needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation, vpn_container, ios_delivery, publication_prepare, managed_rtc_provider, external_tests, external_windows_signing, apple_submission]
     environment: public-release
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -934,6 +1082,7 @@ jobs:
         run: python3 ci/bootstrap.py
         env:
           RELEASE_TARGET: publish
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}

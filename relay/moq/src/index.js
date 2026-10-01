@@ -8,6 +8,8 @@ const VERSION = 0xff000010;
 const CLOSE_TIMEOUT_MS = 5000;
 const MAX_BODY_BYTES = 16384;
 const MAX_TOKEN_TTL_MS = 300000;
+const MAX_USAGE_EVENT_BYTES = 1024 * 1024;
+const MAX_FRAME_BYTES = 512 * 1024;
 const MAX_RELAY_TOKENS = 10;
 const MAX_TOMBSTONE_MS = 3600000;
 const shareIdPattern = /^[A-Za-z0-9]{8}$/;
@@ -40,6 +42,16 @@ function secretMatches(actual, expected) {
 
 function validExpiry(value, max) {
   return Number.isSafeInteger(value) && value > Date.now() + 1000 && value <= max;
+}
+
+function usageEndpoint(value) {
+  if (typeof value !== 'string' || value.length > 2048) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || !url.hostname || url.username || url.password ||
+        url.pathname !== '/internal/v1/live-share/moq/usage' || url.search || url.hash) return null;
+    return url;
+  } catch { return null; }
 }
 
 function json(response, value, status = 200) {
@@ -81,6 +93,28 @@ function readJson(request) {
     request.on('error', () => reject(new Error('request_failed')));
     request.on('aborted', () => reject(new Error('request_aborted')));
   });
+}
+
+async function readBoundedResponse(response, maximum) {
+  if (!response.body) return null;
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const part = await reader.read();
+      if (part.done) break;
+      total += part.value.byteLength;
+      if (total > maximum) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(Buffer.from(part.value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, total).toString('utf8');
 }
 
 function exactIds(actual, expected) {
@@ -141,6 +175,22 @@ async function forwardPublisher(record) {
           group.readFrame(), record.finished.then(() => undefined),
         ]);
         if (!frame || record.closed) break;
+        const payloadBytes=frame.payload?.byteLength;
+        if(!Number.isSafeInteger(payloadBytes)||payloadBytes<1||payloadBytes>MAX_FRAME_BYTES){
+          await record.relay.closeForUsage('invalid_moq_frame');
+          return;
+        }
+        const viewerCopies=[...record.relay.tokens.values()].filter(token=>
+          token.active&&token.role==='subscribe'&&token.sessions.size>0).length;
+        let uncharged=payloadBytes*(viewerCopies+1);
+        while(uncharged>0){
+          const charge=Math.min(uncharged,MAX_USAGE_EVENT_BYTES);
+          if(!await record.relay.chargeUsage(record.relay,charge)){
+            await record.relay.closeForUsage('moq_usage_or_quota_unavailable');
+            return;
+          }
+          uncharged-=charge;
+        }
         outgoing.writeFrame(frame);
       }
     } finally {
@@ -159,6 +209,10 @@ export async function createMoqRelay({
   dataPort = Number(process.env.MOQ_DATA_PORT ?? 443),
   publicOrigin = process.env.MOQ_PUBLIC_ORIGIN,
   controlToken = process.env.MOQ_CONTROL_TOKEN,
+  usageUrl = process.env.MOQ_USAGE_URL,
+  usageToken = process.env.MOQ_USAGE_TOKEN,
+  managedUsageRequired = process.env.MOQ_MANAGED_USAGE_REQUIRED === 'true',
+  usageFetcher = fetch,
   certificatePath = process.env.MOQ_TLS_CERT_FILE,
   privateKeyPath = process.env.MOQ_TLS_KEY_FILE,
   maxRelays = Number(process.env.MOQ_MAX_RELAYS ?? 512),
@@ -166,6 +220,13 @@ export async function createMoqRelay({
 } = {}) {
   const origin = validOrigin(publicOrigin);
   const secret = requiredSecret(controlToken, 'MOQ_CONTROL_TOKEN');
+  const usage = usageEndpoint(usageUrl);
+  const usageSecret = usageToken ? requiredSecret(usageToken, 'MOQ_USAGE_TOKEN') : null;
+  if ((usage || usageSecret) && (!usage || !usageSecret || usageSecret === secret)) {
+    throw new Error('invalid_worker_usage_configuration');
+  }
+  if (managedUsageRequired && !usage) throw new Error('managed_worker_usage_required');
+  if (typeof usageFetcher !== 'function') throw new Error('worker_usage_fetch_unavailable');
   if (!origin || origin !== publicOrigin || !certificatePath || !privateKeyPath) {
     throw new Error('moq_tls_origin_and_certificate_required');
   }
@@ -191,6 +252,64 @@ export async function createMoqRelay({
   let closePromise;
   let sweep;
   const scopeKey = (shareId, epoch) => `${shareId}\u0000${epoch}`;
+
+  function workerUsageUrl(operation) {
+    const target = new URL(usage);
+    target.pathname = target.pathname.replace(/\/usage$/, `/${operation}`);
+    return target;
+  }
+
+  async function workerUsageRequest(path, body) {
+    if (!usage || !usageSecret) return null;
+    try {
+      const response = await usageFetcher(workerUsageUrl(path), {
+        method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(5000),
+        headers: {'content-type': 'application/json', 'x-live-share-moq-usage-token': usageSecret},
+        body: JSON.stringify(body),
+      });
+      if (response.status !== 200 || !/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') ?? '')) {
+        await response.body?.cancel();
+        return null;
+      }
+      const raw = await readBoundedResponse(response, MAX_BODY_BYTES);
+      if (raw === null) return null;
+      const value = JSON.parse(raw);
+      return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+    } catch { return null; }
+  }
+
+  async function verifyWorkerUsageAuthority() {
+    if (!usage || !usageSecret) return false;
+    const probeId = randomUUID().replaceAll('-', '');
+    const value = await workerUsageRequest('readyz', {probe_id: probeId});
+    return value?.status === 'ready' && value.protocol === 'omniterm-moq-usage-v1' &&
+      value.probe_id === probeId && Object.keys(value).length === 3;
+  }
+
+  async function verifyWorkerRoom(relay) {
+    if (!usage || !usageSecret) return !managedUsageRequired;
+    const heartbeatId=randomUUID().replaceAll('-','');
+    const value=await workerUsageRequest('heartbeat',{share_id:relay.shareId,
+      session_epoch:relay.epoch,heartbeat_id:heartbeatId});
+    return value?.status==='active'&&value.share_id===relay.shareId&&
+      value.session_epoch===relay.epoch&&value.heartbeat_id===heartbeatId&&Object.keys(value).length===4;
+  }
+
+  async function chargeWorkerUsage(relay, byteCount) {
+    if (!Number.isSafeInteger(byteCount) || byteCount < 1 || byteCount > MAX_USAGE_EVENT_BYTES ||
+        relay.bytesCharged > relay.maxBytes - byteCount) return false;
+    if (usage && usageSecret) {
+      const eventId = randomUUID().replaceAll('-', '');
+      const value = await workerUsageRequest('usage', {share_id: relay.shareId,
+        session_epoch: relay.epoch, event_id: eventId, bytes: byteCount});
+      if (value?.status !== 'charged' || value.event_id !== eventId ||
+          !Object.keys(value).every(key => ['status', 'event_id', 'duplicate'].includes(key))) return false;
+    } else if (managedUsageRequired) {
+      return false;
+    }
+    relay.bytesCharged += byteCount;
+    return true;
+  }
   const h3 = new Http3Server({port: dataPort, host: dataHost,
     secret: randomBytes(32).toString('hex'), cert: certificate, privKey: privateKey});
   // Select the actual WebTransport application protocol during HTTP/3
@@ -237,10 +356,19 @@ export async function createMoqRelay({
       return json(response, {error: 'invalid_request'}, 400);
     }
     try {
+      if (request.method === 'GET' && url.pathname === '/v1/readyz') {
+        if (!await verifyWorkerUsageAuthority()) {
+          return json(response, {error: 'worker_usage_authority_unavailable'}, 503);
+        }
+        return json(response, {status: 'ready', protocol: 'omniterm-moq-v1',
+          worker_usage_metering: true, active_session_cutoff: true});
+      }
       if (request.method === 'POST' && url.pathname === '/v1/relays') {
         const body = await readJson(request);
         if (!shareIdPattern.test(body.shareId ?? '') || !epochPattern.test(body.epoch ?? '') ||
-            !validExpiry(body.expiresAt, Date.now() + 86400000)) {
+            !validExpiry(body.expiresAt, Date.now() + 86400000) ||
+            (managedUsageRequired && (!Number.isSafeInteger(body.maxBytes) || body.maxBytes < 1 ||
+              body.maxBytes > 1_000_000_000_000 || body.usageOrigin !== usage.origin))) {
           return json(response, {error: 'invalid_relay_scope'}, 400);
         }
         if (relays.size >= maxRelays) return json(response, {error: 'relay_capacity'}, 429);
@@ -250,18 +378,29 @@ export async function createMoqRelay({
         const relayId = randomBytes(24).toString('base64url');
         const broadcastPath = `omniterm/${body.epoch}`;
         const broadcast = new Moq.Broadcast.Producer();
-        const relay = {relayId, shareId: body.shareId, epoch: body.epoch,
+        const maxBytes = Number.isSafeInteger(body.maxBytes) && body.maxBytes > 0
+          ? Math.min(body.maxBytes, 1_000_000_000_000) : 100_000_000;
+        const relay = {relayId, shareId: body.shareId, epoch: body.epoch, maxBytes,
+          bytesCharged: 0, chargeUsage: chargeWorkerUsage,
+          closeForUsage: reason => closeRelay(relay, reason),
           expiresAt: body.expiresAt, closed: false, tokens: new Map(), closedTokens: new Set(),
           sessions: new Set(), publisherToken: null, broadcast, broadcastPath,
           track: broadcast.createTrack('terminal', {ordered: true, latencyMax: 5000}),
           expiryTimer: null};
+        if(!await verifyWorkerRoom(relay))return json(response,{error:'moq_owner_scope_inactive'},410);
         relay.expiryTimer = setTimeout(() => void closeRelay(relay, 'room_expired'),
           Math.max(1, relay.expiresAt - Date.now()));
         relay.expiryTimer.unref?.();
+        relay.heartbeatTimer=setInterval(()=>{
+          if(!relay.closed)void verifyWorkerRoom(relay).then(active=>{
+            if(!active)void closeRelay(relay,'worker_owner_or_quota_inactive');
+          });
+        },15000);
+        relay.heartbeatTimer.unref?.();
         relays.set(relayId, relay);
         relayScopes.set(scopeKey(body.shareId, body.epoch), relayId);
         return json(response, {relayId, shareId: relay.shareId, epoch: relay.epoch,
-          expiresAt: relay.expiresAt, publicOrigin: origin}, 201);
+          expiresAt: relay.expiresAt, maxBytes: relay.maxBytes, publicOrigin: origin}, 201);
       }
 
       const tokenMatch = /^\/v1\/relays\/([A-Za-z0-9_-]{1,128})\/tokens$/.exec(url.pathname);
@@ -331,6 +470,7 @@ export async function createMoqRelay({
             shareId: relay.shareId, epoch: relay.epoch, closedTokenIds, endRoom: true}, 503);
         }
         clearTimeout(relay.expiryTimer);
+        clearInterval(relay.heartbeatTimer);
         relay.broadcast.close(new Error('owner_cutoff'));
         const prior = {relayId: relay.relayId, shareId: relay.shareId,
           epoch: relay.epoch, closedTokenIds, expiresAt: Date.now() + MAX_TOMBSTONE_MS};
@@ -378,6 +518,7 @@ export async function createMoqRelay({
         }
         if (body.endRoom) {
           clearTimeout(relay.expiryTimer);
+          clearInterval(relay.heartbeatTimer);
           relay.broadcast.close(new Error('owner_cutoff'));
           const prior = {relayId: relay.relayId, shareId: relay.shareId,
             epoch: relay.epoch, closedTokenIds: [...closedTokenIds].sort(),
@@ -488,6 +629,7 @@ export async function createMoqRelay({
   async function closeRelay(relay, reason) {
     if (!relay.closed) relay.closed = true;
     clearTimeout(relay.expiryTimer);
+    clearInterval(relay.heartbeatTimer);
     relay.broadcast.close(new Error(reason));
     const results = await Promise.all([...relay.tokens.values()].map(token => closeToken(token, reason)));
     return results.every(Boolean) && relay.sessions.size === 0;

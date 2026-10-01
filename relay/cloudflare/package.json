@@ -15,7 +15,7 @@
   },
   "devDependencies": {
     "esbuild": "0.28.1",
-    "miniflare": "5.20260918.0-alpha",
-    "wrangler": "4.135.0"
+    "miniflare": "5.20260930.0-alpha",
+    "wrangler": "4.145.0"
   }
 }
