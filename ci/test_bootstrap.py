@@ -11,6 +11,7 @@ import sys
 import tempfile
 from pathlib import Path, PurePosixPath
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('bootstrap', Path(__file__).with_name('bootstrap.py'))
 b = importlib.util.module_from_spec(spec)
@@ -70,6 +71,23 @@ class BootstrapTests(unittest.TestCase):
         del env['BUILD_CONFIG']; del env['STORAGE_CONFIG']
         self.assertEqual(b.validate(env)[-1], 'a' * 40)
 
+    def test_full_release_requires_managed_vpn_build_config_exactly_enabled(self):
+        env = self.env()
+        env['RELEASE_TARGET'] = 'publish'
+        env['RELEASE_REQUEST'] = json.dumps({
+            'source_sha': 'a' * 40, 'version': '0.1.0', 'build_number': '42',
+            'build_only': False, 'ios_action': 'upload',
+        })
+        env['BUILD_CONFIG'] = json.dumps({'OMNI_ENABLE_VPN': 'true'})
+        self.assertEqual(b.validate(env)[-1], 'a' * 40)
+
+        for raw in ('', '{}', '{"OMNI_ENABLE_VPN":"false"}',
+                    '{"OMNI_ENABLE_VPN":true}', '{"OMNI_ENABLE_VPN":"true"'):
+            with self.subTest(config=raw):
+                env['BUILD_CONFIG'] = raw
+                with self.assertRaisesRegex(ValueError, 'OMNI_ENABLE_VPN=true'):
+                    b.validate(env)
+
     def test_full_release_stages_require_private_evidence_storage(self):
         request = {'source_sha': 'a' * 40, 'version': '0.1.0', 'build_number': '42',
                    'build_only': False, 'ios_action': 'upload'}
@@ -77,8 +95,9 @@ class BootstrapTests(unittest.TestCase):
             env = self.env()
             env['RELEASE_TARGET'] = target
             env['RELEASE_REQUEST'] = json.dumps(request)
+            env['BUILD_CONFIG'] = json.dumps({'OMNI_ENABLE_VPN': 'true'})
             env.pop('STORAGE_CONFIG')
-            with self.subTest(target=target), self.assertRaises(ValueError):
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, 'Required configuration'):
                 b.validate(env)
 
         build_only = self.env()
@@ -104,11 +123,11 @@ class WorkflowOrderingTests(unittest.TestCase):
     def test_publication_requires_every_download_and_successful_apple_delivery(self):
         workflow = (Path(__file__).resolve().parent.parent / '.github/workflows/release.yml').read_text()
         publish = workflow.split('\n  publish:\n', 1)[1]
-        self.assertIn('needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation, ios_delivery, publication_prepare, external_tests, external_windows_signing, apple_submission]', publish)
+        self.assertIn('needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation, vpn_container, ios_delivery, publication_prepare, managed_rtc_provider, external_tests, external_windows_signing, apple_submission]', publish)
         # No partial release can be published after any platform fails or is skipped.
         expected = ("if: ${{ !cancelled() && github.repository == 'omnisolo-llc/omniterm-release' "
                     "&& github.ref == 'refs/heads/main' "
-                    "&& !inputs.build_only && needs.resolve.result == 'success' && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.windows_download.result == 'success' && needs.ios.result == 'success' && needs.package_signatures.result == 'success' && needs.apple_testflight.result == 'success' && needs.installation.result == 'success' && needs.ios_delivery.result == 'success' && needs.publication_prepare.result == 'success' && needs.external_tests.result == 'success' && needs.external_windows_signing.result == 'success' && (inputs.ios_action == 'upload' || needs.apple_submission.result == 'success') }}")
+                    "&& !inputs.build_only && needs.resolve.result == 'success' && needs.validate.result == 'success' && needs.downloads.result == 'success' && needs.windows_download.result == 'success' && needs.ios.result == 'success' && needs.package_signatures.result == 'success' && needs.apple_testflight.result == 'success' && needs.installation.result == 'success' && needs.vpn_container.result == 'success' && needs.ios_delivery.result == 'success' && needs.publication_prepare.result == 'success' && needs.managed_rtc_provider.result == 'success' && needs.external_tests.result == 'success' && needs.external_windows_signing.result == 'success' && (inputs.ios_action == 'upload' || needs.apple_submission.result == 'success') }}")
         self.assertIn(expected, publish)
         self.assertIn("needs.ios.result == 'success'", publish)
         self.assertIn('environment: public-release', publish)
@@ -116,7 +135,8 @@ class WorkflowOrderingTests(unittest.TestCase):
     def test_public_submission_waits_for_accepted_candidate(self):
         workflow = (Path(__file__).resolve().parent.parent / '.github/workflows/release.yml').read_text()
         apple = workflow.split('\n  apple_submission:\n', 1)[1].split('\n  publish:\n', 1)[0]
-        self.assertIn('needs: [resolve, validate, ios_delivery, publication_prepare, external_tests, external_windows_signing]', apple)
+        self.assertIn('needs: [resolve, validate, ios_delivery, publication_prepare, vpn_container, external_tests, external_windows_signing]', apple)
+        self.assertIn("needs.vpn_container.result == 'success'", apple)
         self.assertIn("inputs.ios_action == 'submit'", apple)
         self.assertIn("needs.external_tests.result == 'success'", apple)
         self.assertIn("needs.external_windows_signing.result == 'success'", apple)
@@ -314,16 +334,186 @@ class BootstrapExecutionTests(unittest.TestCase):
                     script = b.checkout_reviewed_entrypoint(source, sha, PurePosixPath('scripts/task.py'), env, log)
                     if exit_code:
                         with self.assertRaises(subprocess.CalledProcessError):
-                            b.invoke([sys.executable, '-I', str(script)], source, {**env, 'CHILD_EXIT_CODE': str(exit_code)}, log)
+                            b.invoke([sys.executable, '-I', '-B', str(script)], source, {**env, 'CHILD_EXIT_CODE': str(exit_code)}, log)
                     else:
-                        b.invoke([sys.executable, '-I', str(script)], source, env, log)
+                        b.invoke([sys.executable, '-I', '-B', str(script)], source, env, log)
                 self.assertNotIn('private actual child output', output.getvalue())
                 self.assertIn('private actual child output', (root / 'private.log').read_text())
                 self.assertEqual(git('rev-parse', 'HEAD'), sha)
+                b.thaw_reviewed_worktree(source, PurePosixPath('scripts'))
             self.assertFalse(root.exists())
+
+    def test_reviewed_worktree_checks_all_bytes_modes_and_extra_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, env, git, _ = self.repository(root)
+            executable = source / 'scripts/run.sh'
+            executable.write_text('#!/bin/sh\nexit 0\n')
+            executable.chmod(0o755)
+            git('add', 'scripts/run.sh')
+            git('commit', '-qm', 'Add executable reviewed source')
+            sha = git('rev-parse', 'HEAD')
+            git('update-ref', 'refs/remotes/origin/reviewed', sha)
+            with (root / 'private.log').open('wb') as log:
+                b.verify_reviewed_worktree(source, sha, PurePosixPath('scripts'), env, log)
+
+                task = source / 'scripts/task.py'
+                original = task.read_bytes()
+                task.write_bytes(original + b'# changed after checkout\n')
+                with self.assertRaisesRegex(ValueError, 'differs from its Git tree'):
+                    b.verify_reviewed_worktree(source, sha, PurePosixPath('scripts'), env, log)
+                task.write_bytes(original)
+
+                extra = source / 'scripts/untracked.py'
+                extra.write_text('raise RuntimeError(\'untrusted module\')\n')
+                with self.assertRaisesRegex(ValueError, 'differs from its Git tree'):
+                    b.verify_reviewed_worktree(source, sha, PurePosixPath('scripts'), env, log)
+                extra.unlink()
+
+                if os.name != 'nt':
+                    executable.chmod(0o644)
+                    with self.assertRaisesRegex(ValueError, 'differs from its Git tree'):
+                        b.verify_reviewed_worktree(
+                            source, sha, PurePosixPath('scripts'), env, log)
+
+    def test_reviewed_worktree_ignores_replacement_refs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, env, git, sha = self.repository(root)
+            task = source / 'scripts/task.py'
+            task.write_text("print('replacement source')\n")
+            git('add', 'scripts/task.py')
+            git('commit', '-qm', 'Unapproved replacement source')
+            replacement = git('rev-parse', 'HEAD')
+            git('replace', sha, replacement)
+            git('update-ref', 'HEAD', sha)
+
+            with (root / 'private.log').open('wb') as log:
+                with self.assertRaisesRegex(ValueError, 'differs from its Git tree'):
+                    b.verify_reviewed_worktree(
+                        source, sha, PurePosixPath('scripts'), env, log)
+
+    @unittest.skipIf(os.name == 'nt', 'Windows symlink support varies by runner')
+    def test_reviewed_worktree_rejects_import_module_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, env, git, _ = self.repository(root)
+            outside = root / 'outside.py'
+            outside.write_text("raise RuntimeError('outside source')\n")
+            module = source / 'scripts/helper.py'
+            module.symlink_to(outside)
+            git('config', 'core.symlinks', 'true')
+            git('add', 'scripts/helper.py')
+            git('commit', '-qm', 'Add importable module symlink')
+            sha = git('rev-parse', 'HEAD')
+
+            with (root / 'private.log').open('wb') as log:
+                with self.assertRaisesRegex(ValueError, 'differs from its Git tree'):
+                    b.verify_reviewed_worktree(
+                        source, sha, PurePosixPath('scripts'), env, log)
+
+    def test_reviewed_worktree_enforces_resource_bounds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, env, _, sha = self.repository(root)
+            bounds = (
+                ('MAX_REVIEWED_TREE_BYTES', 0),
+                ('MAX_REVIEWED_FILE_COUNT', 0),
+                ('MAX_REVIEWED_FILE_BYTES', 1),
+                ('MAX_REVIEWED_TOTAL_BYTES', 1),
+                ('MAX_REVIEWED_DIRECTORY_COUNT', 0),
+            )
+            with (root / 'private.log').open('wb') as log:
+                for name, limit in bounds:
+                    with self.subTest(bound=name), patch.object(b, name, limit):
+                        with self.assertRaises(ValueError):
+                            b.verify_reviewed_worktree(
+                                source, sha, PurePosixPath('scripts'), env, log)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX O_NOFOLLOW is required for this race fixture')
+    def test_freeze_does_not_chmod_outside_target_after_file_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, _, _, _ = self.repository(root)
+            outside = root / 'outside.py'
+            outside.write_text('external file\n')
+            outside_mode = outside.stat().st_mode & 0o222
+            target = source / 'scripts/task.py'
+            original_open = os.open
+
+            def replace_before_open(path, flags, *args, **kwargs):
+                if Path(path) == target:
+                    target.unlink()
+                    target.symlink_to(outside)
+                return original_open(path, flags, *args, **kwargs)
+
+            with patch.object(b.os, 'open', side_effect=replace_before_open):
+                with self.assertRaisesRegex(ValueError, 'changed during permission update'):
+                    b.freeze_reviewed_worktree(source, PurePosixPath('scripts'))
+            self.assertTrue(target.is_symlink())
+            self.assertEqual(outside.stat().st_mode & 0o222, outside_mode)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows handle identity contract')
+    def test_windows_reviewed_freeze_uses_python_stat_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, env, git, sha = self.repository(root)
+            with (root / 'private.log').open('wb') as log:
+                b.verify_reviewed_worktree(source, sha, PurePosixPath('scripts'), env, log)
+                b.freeze_reviewed_worktree(source, PurePosixPath('scripts'))
+                b.verify_reviewed_worktree(
+                    source, sha, PurePosixPath('scripts'), env, log,
+                    require_read_only=True)
+                self.assertFalse((source / 'scripts/task.py').stat().st_mode & 0o222)
+                b.thaw_reviewed_worktree(source, PurePosixPath('scripts'))
+            self.assertEqual(git('rev-parse', 'HEAD'), sha)
+
+    def test_reviewed_checkout_verifies_entrypoint_directory_before_returning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, env, git, sha = self.repository(root)
+            with (root / 'private.log').open('wb') as log:
+                with patch.object(b, 'verify_reviewed_worktree',
+                                  wraps=b.verify_reviewed_worktree) as verify:
+                    script = b.checkout_reviewed_entrypoint(
+                        source, sha, PurePosixPath('scripts/task.py'), env, log)
+            self.assertEqual(script, source / 'scripts/task.py')
+            self.assertEqual(verify.call_count, 2)
+            self.assertEqual(verify.call_args.args[:3],
+                             (source, sha, PurePosixPath('scripts')))
+            self.assertEqual(verify.call_args.args[3]['GIT_NO_REPLACE_OBJECTS'], '1')
+            self.assertTrue(verify.call_args.kwargs['require_read_only'])
+            self.assertFalse(script.stat().st_mode & 0o222)
+            self.assertFalse(script.parent.stat().st_mode & 0o222)
+            self.assertEqual(git('rev-parse', 'HEAD'), sha)
+            b.thaw_reviewed_worktree(source, PurePosixPath('scripts'))
+
+    def test_reviewed_checkout_freezes_scripts_parent_before_returning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, env, git, _ = self.repository(root)
+            release_script = source / 'scripts/release/task.py'
+            release_script.parent.mkdir()
+            release_script.write_text("print('private actual child output')\n")
+            git('add', 'scripts/release/task.py')
+            git('commit', '-qm', 'Add nested reviewed entrypoint')
+            sha = git('rev-parse', 'HEAD')
+            git('update-ref', 'refs/remotes/origin/reviewed', sha)
+
+            with (root / 'private.log').open('wb') as log:
+                script = b.checkout_reviewed_entrypoint(
+                    source, sha, PurePosixPath('scripts/release/task.py'), env, log)
+            self.assertFalse((source / 'scripts/release').stat().st_mode & 0o222)
+            self.assertFalse((source / 'scripts').stat().st_mode & 0o222)
+            b.thaw_reviewed_worktree(
+                source, PurePosixPath('scripts/release'), thaw_parent=True)
+            self.assertEqual(script, release_script)
+            self.assertEqual(git('rev-parse', 'HEAD'), sha)
 
     def test_submodule_credential_is_added_only_to_private_task_environment(self):
         env = {'PATH': '/trusted/bin', 'SOURCE_SUBMODULE_TOKEN': 'private-read-token',
+               'ACTIONS_ID_TOKEN_REQUEST_URL': 'https://pipelines.actions.githubusercontent.com/token',
+               'ACTIONS_ID_TOKEN_REQUEST_TOKEN': 'short-lived-runner-token',
                'GITHUB_ENV': '/runner/command_env', 'GITHUB_OUTPUT': '/runner/command_output',
                'GITHUB_PATH': '/runner/command_path', 'GITHUB_STATE': '/runner/command_state',
                'GITHUB_STEP_SUMMARY': '/runner/command_summary'}
@@ -333,6 +523,10 @@ class BootstrapExecutionTests(unittest.TestCase):
         self.assertEqual(task_env['SOURCE_SUBMODULE_TOKEN'], token)
         self.assertNotIn('SOURCE_SUBMODULE_TOKEN', env)
         self.assertEqual(task_env['PATH'], env['PATH'])
+        self.assertEqual(task_env['ACTIONS_ID_TOKEN_REQUEST_URL'],
+                         env['ACTIONS_ID_TOKEN_REQUEST_URL'])
+        self.assertEqual(task_env['ACTIONS_ID_TOKEN_REQUEST_TOKEN'],
+                         env['ACTIONS_ID_TOKEN_REQUEST_TOKEN'])
         for name in ('GITHUB_ENV', 'GITHUB_OUTPUT', 'GITHUB_PATH', 'GITHUB_STATE', 'GITHUB_STEP_SUMMARY'):
             self.assertNotIn(name, task_env)
 
@@ -358,6 +552,7 @@ class BootstrapExecutionTests(unittest.TestCase):
                     alias, sha, PurePosixPath('scripts/task.py'), env, log)
             self.assertEqual(script.resolve(), (source / 'scripts/task.py').resolve())
             self.assertEqual(git('rev-parse', 'HEAD'), sha)
+            b.thaw_reviewed_worktree(source, PurePosixPath('scripts'))
 
     def test_reviewed_checkout_still_rejects_an_escaping_entrypoint(self):
         with tempfile.TemporaryDirectory() as directory:

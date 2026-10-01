@@ -49,8 +49,8 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertEqual(set(bootstrap_tests.b.BUILD_TARGETS), TARGETS)
         self.assertEqual(set(bootstrap_tests.b.RELEASE_TARGETS), TARGETS | {
             'resolve', 'integration', 'installation', 'package-signatures', 'apple-testflight',
-            'validate', 'ios-deliver', 'ios-submit', 'publication-prepare', 'external-tests',
-            'external-windows-signing', 'publish',
+            'validate', 'ios-deliver', 'ios-submit', 'publication-prepare', 'vpn-container', 'external-tests',
+            'managed-rtc-provider', 'external-windows-signing', 'publish',
         })
         release = {'build_only': False, 'ios_action': 'submit'}
         for target in bootstrap_tests.b.RELEASE_TARGETS - bootstrap_tests.b.BUILD_TARGETS - {'resolve'}:
@@ -68,7 +68,7 @@ class ReleaseMatrixTests(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/release.yml').read_text()
         jobs = ('integration', 'validate', 'downloads', 'windows_download', 'ios',
                 'package_signatures', 'apple_testflight', 'installation', 'ios_delivery',
-                'publication_prepare', 'external_tests', 'external_windows_signing',
+                'vpn_container', 'managed_rtc_provider', 'publication_prepare', 'external_tests', 'external_windows_signing',
                 'apple_submission', 'publish')
         for name in jobs:
             job = re.split(r'\n  [a-z_]+:\n', workflow.split(f'\n  {name}:\n', 1)[1], maxsplit=1)[0]
@@ -93,6 +93,8 @@ class ReleaseMatrixTests(unittest.TestCase):
             'package_signatures': 'package-signatures',
             'apple_testflight': 'apple-testflight',
             'installation': 'installation',
+            'vpn_container': 'vpn-container',
+            'managed_rtc_provider': 'managed-rtc-provider',
             'ios_delivery': 'ios-deliver',
             'publication_prepare': 'publication-prepare',
             'external_tests': 'external-tests',
@@ -142,25 +144,31 @@ class ReleaseMatrixTests(unittest.TestCase):
             'apple_testflight': {'resolve', 'validate', 'ios'},
             'installation': {'resolve', 'validate', 'downloads', 'windows_download', 'ios',
                              'package_signatures', 'apple_testflight'},
-            'ios_delivery': {'resolve', 'validate', 'ios', 'apple_testflight', 'installation'},
+            'vpn_container': {'resolve', 'validate', 'downloads', 'windows_download', 'ios',
+                              'package_signatures', 'apple_testflight', 'installation'},
+            'managed_rtc_provider': {'resolve', 'publication_prepare'},
+            'ios_delivery': {'resolve', 'validate', 'ios', 'apple_testflight', 'installation',
+                             'vpn_container'},
             'publication_prepare': {
                 'resolve', 'validate', 'downloads', 'windows_download', 'ios', 'package_signatures',
-                'apple_testflight', 'installation', 'ios_delivery',
+                'apple_testflight', 'installation', 'vpn_container', 'ios_delivery',
             },
-            'external_tests': {'resolve', 'publication_prepare'},
+            'external_tests': {'resolve', 'publication_prepare', 'managed_rtc_provider'},
             'external_windows_signing': {'resolve', 'publication_prepare', 'external_tests'},
             'apple_submission': {'resolve', 'validate', 'ios_delivery', 'publication_prepare',
-                                'external_tests', 'external_windows_signing'},
+                                'vpn_container', 'external_tests', 'external_windows_signing'},
             'publish': {'resolve', 'validate', 'downloads', 'windows_download', 'ios',
                         'package_signatures', 'apple_testflight', 'installation', 'ios_delivery',
-                        'publication_prepare', 'external_tests', 'external_windows_signing',
+                        'vpn_container', 'publication_prepare', 'managed_rtc_provider',
+                        'external_tests', 'external_windows_signing',
                         'apple_submission'},
         }
         for name, required in required_edges.items():
             with self.subTest(dependencies=name):
                 self.assertTrue(required <= job_needs(jobs[name]))
 
-        stages = {'integration', 'installation', 'package_signatures', 'apple_testflight', 'ios_delivery'}
+        stages = {'integration', 'installation', 'vpn_container', 'managed_rtc_provider', 'package_signatures',
+                  'apple_testflight', 'ios_delivery'}
         for name in stages:
             with self.subTest(private_evidence=name):
                 self.assertIn('STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}', jobs[name])
@@ -173,13 +181,148 @@ class ReleaseMatrixTests(unittest.TestCase):
         for dependency in required_edges['publish'] - {'apple_submission'}:
             with self.subTest(publication_gate=dependency):
                 self.assertIn(f"needs.{dependency}.result == 'success'", publish)
+        self.assertIn('needs.vpn_container.result == \'success\'', publish)
+        self.assertIn('needs.managed_rtc_provider.result == \'success\'', publish)
         self.assertIn("inputs.ios_action == 'upload' || needs.apple_submission.result == 'success'", publish)
+
+    def test_container_vpn_evidence_is_two_run_bound_kernel_jobs_required_before_delivery(self):
+        workflow = (ROOT / '.github/workflows/release.yml').read_text()
+        jobs = workflow_jobs(workflow)
+        job = jobs['vpn_container']
+        rows = dict(re.findall(
+            r'^          - kernel_state: (present|absent)\n            runner: ([a-z0-9-]+)$',
+            job, re.MULTILINE))
+        self.assertEqual(rows, {
+            'present': 'omniterm-release-vpn-kmod-present',
+            'absent': 'omniterm-release-vpn-kmod-absent',
+        })
+        self.assertIn("environment: vpn-container", job)
+        self.assertIn("permissions:\n      contents: read\n      id-token: write", job)
+        self.assertIn('OMNI_VPN_E2E_KERNEL_MODULE_STATE: ${{ matrix.kernel_state }}', job)
+        self.assertIn('OMNITERM_VPN_E2E_PROFILE_FILE: ${{ vars.OMNITERM_VPN_E2E_PROFILE_FILE }}', job)
+        for role in ('CLIENT_BASE', 'GATEWAY', 'RELAY', 'RECEIVER', 'DNS'):
+            with self.subTest(image=role):
+                name = 'OMNITERM_VPN_E2E_' + role + '_IMAGE'
+                self.assertIn(name + ': ${{ vars.' + name + ' }}', job)
+        self.assertIn('docker info >/dev/null 2>&1', job)
+        self.assertIn('present) test -d /sys/module/wireguard', job)
+        self.assertIn('absent) test ! -d /sys/module/wireguard', job)
+        self.assertNotIn('OMNITERM_VPN_E2E_PROFILE_FILE', jobs['external_tests'])
+        for name in ('ios_delivery', 'publication_prepare', 'apple_submission', 'publish'):
+            with self.subTest(gate=name):
+                self.assertIn('vpn_container', jobs[name])
+        self.assertIn("needs.vpn_container.result == 'success'", jobs['publish'])
+
+    def test_managed_rtc_provider_evidence_is_protected_and_private_before_external_tests(self):
+        workflow = (ROOT / '.github/workflows/release.yml').read_text()
+        jobs = workflow_jobs(workflow)
+        producer = jobs['managed_rtc_provider']
+        self.assertEqual(job_needs(producer), {'resolve', 'publication_prepare'})
+        self.assertIn("environment: managed-rtc-provider", producer)
+        self.assertIn("runs-on: [self-hosted, 'omniterm-release-managed-rtc']", producer)
+        self.assertIn("permissions:\n      contents: read\n      id-token: write", producer)
+        self.assertIn('RELEASE_TARGET: managed-rtc-provider', producer)
+        self.assertIn('MANAGED_RTC_PROVIDER_ENVIRONMENT_FILE: ${{ vars.MANAGED_RTC_PROVIDER_ENVIRONMENT_FILE }}',
+                      producer)
+        self.assertIn('MANAGED_RTC_IDENTITY_FIXTURE_FILE: ${{ vars.MANAGED_RTC_IDENTITY_FIXTURE_FILE }}',
+                      producer)
+        self.assertIn('RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}', producer)
+        self.assertIn('PUBLIC_BUILDER_SHA', (ROOT.parents[0] / 'scripts/release/entrypoint.py').read_text())
+        self.assertIn('STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}', producer)
+        self.assertNotIn('GH_TOKEN:', producer)
+        self.assertNotIn('SIGNING_CONFIG:', producer)
+        uploads = re.findall(r'^[ \t]+path: (.+)$', producer, re.MULTILINE)
+        self.assertEqual(uploads, ['${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed'])
+        self.assertTrue({'managed_rtc_provider'} <= job_needs(jobs['external_tests']))
+        self.assertTrue({'managed_rtc_provider'} <= job_needs(jobs['publish']))
+        self.assertNotIn('MANAGED_RTC_ACCEPTANCE_EVIDENCE:', jobs['external_tests'])
+
+    def test_installed_vpn_attestations_use_platform_scoped_protected_environments(self):
+        text = (ROOT / '.github/workflows/release.yml').read_text()
+        jobs = workflow_jobs(text)
+        installation = jobs['installation']
+        self.assertIn('environment: ${{ matrix.attestation_environment }}', installation)
+        platform_environments = {}
+        rows = re.findall(
+            r'(?ms)^          - platform: ([a-z]+)\n(.*?)(?=^          - platform: |\Z)',
+            installation,
+        )
+        for platform, row in rows:
+            match = re.search(r'^            attestation_environment: ([a-z-]+)$',
+                              row, re.MULTILINE)
+            self.assertIsNotNone(match, platform)
+            platform_environments[platform] = match.group(1)
+        self.assertEqual(platform_environments, {
+            'linux': 'vpn-installation-linux',
+            'macos': 'vpn-installation-macos',
+            'windows': 'vpn-installation-windows',
+            'android': 'vpn-installation-android',
+            'ios': 'vpn-installation-ios',
+            'web': 'downloads',
+        })
+        self.assertIn('id-token: write', installation)
+        self.assertIn('environment: downloads', jobs['windows_download'])
+
+    def test_release_tasks_receive_the_pinned_vpn_provider_public_key(self):
+        workflow = (ROOT / '.github/workflows/release.yml').read_text()
+        jobs = workflow_jobs(workflow)
+        key = 'OMNITERM_VPN_PROVIDER_PUBLIC_KEY'
+        expected = '${{ vars.' + key + ' }}'
+        self.assertNotIn(key, workflow.split('\njobs:\n', 1)[0])
+        self.assertNotIn(key, jobs['resolve'])
+        for name, job in jobs.items():
+            if name == 'resolve':
+                continue
+            with self.subTest(job=name):
+                targets = re.findall(r'^\s+RELEASE_TARGET: .+$', job, re.MULTILINE)
+                values = re.findall(r'^\s+' + key + r': (.+)$', job, re.MULTILINE)
+                self.assertEqual(len(targets), 1)
+                self.assertEqual(values, [expected])
+                if name == 'verify':
+                    self.assertNotIn('BUILD_CONFIG:', job)
+                else:
+                    self.assertIn('BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}', job)
+
+    def test_release_job_permissions_are_exact_and_minimal(self):
+        workflow = (ROOT / '.github/workflows/release.yml').read_text()
+        jobs = workflow_jobs(workflow)
+        expected = {
+            'resolve': {'contents': 'read'},
+            'integration': {'contents': 'read'},
+            'verify': {'contents': 'read'},
+            'validate': {'contents': 'write'},
+            'downloads': {'contents': 'write'},
+            'windows_download': {'contents': 'write', 'id-token': 'write'},
+            'ios': {'contents': 'write'},
+            'package_signatures': {'contents': 'read'},
+            'apple_testflight': {'contents': 'write'},
+            'installation': {'contents': 'read', 'id-token': 'write'},
+            'vpn_container': {'contents': 'read', 'id-token': 'write'},
+            'managed_rtc_provider': {'contents': 'read', 'id-token': 'write'},
+            'ios_delivery': {'contents': 'write'},
+            'publication_prepare': {'contents': 'read'},
+            'external_tests': {'contents': 'read', 'id-token': 'write'},
+            'external_windows_signing': {'contents': 'read', 'id-token': 'write'},
+            'apple_submission': {'contents': 'read'},
+            'publish': {'contents': 'write'},
+        }
+        self.assertEqual(set(jobs), set(expected))
+        for name, job in jobs.items():
+            with self.subTest(job=name):
+                block = re.search(
+                    r'^    permissions:\n((?:^      [a-z-]+: [a-z]+\n)+)',
+                    job, re.MULTILINE)
+                self.assertIsNotNone(block)
+                actual = dict(re.findall(r'^      ([a-z-]+): ([a-z]+)$',
+                                         block.group(1), re.MULTILINE))
+                self.assertEqual(actual, expected[name])
 
     def test_private_source_jobs_are_limited_to_the_canonical_builder(self):
         text = (ROOT / '.github/workflows/release.yml').read_text()
         names = ('resolve', 'integration', 'verify', 'validate', 'downloads', 'ios',
                  'package_signatures', 'apple_testflight', 'installation', 'ios_delivery',
-                 'windows_download', 'publication_prepare', 'external_tests', 'external_windows_signing',
+                 'vpn_container', 'managed_rtc_provider', 'windows_download', 'publication_prepare',
+                 'external_tests', 'external_windows_signing',
                  'apple_submission', 'publish')
         for name in names:
             job = re.split(r'\n  [a-z_]+:\n', text.split(f'\n  {name}:\n', 1)[1], maxsplit=1)[0]
@@ -192,7 +335,8 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertNotIn('SOURCE_SUBMODULE_TOKEN:', resolve)
         names = ('integration', 'verify', 'validate', 'downloads', 'ios',
                  'package_signatures', 'apple_testflight', 'installation', 'ios_delivery',
-                 'windows_download', 'publication_prepare', 'external_tests', 'external_windows_signing',
+                 'vpn_container', 'managed_rtc_provider', 'windows_download', 'publication_prepare',
+                 'external_tests', 'external_windows_signing',
                  'apple_submission', 'publish')
         for name in names:
             job = re.split(r'\n  [a-z_]+:\n', text.split(f'\n  {name}:\n', 1)[1], maxsplit=1)[0]
@@ -209,12 +353,14 @@ class ReleaseMatrixTests(unittest.TestCase):
                 self.assertIn('candidate_guard_variable: OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_' + platform.upper(), external)
                 self.assertIn('runner: omniterm-release-' + platform, external)
         self.assertIn('environment: external-tests', external)
+        self.assertIn('managed_rtc_provider', job_needs(workflow_jobs(text)['external_tests']))
         self.assertIn('permissions:\n      contents: read\n      id-token: write', external)
         self.assertIn('OMNI_EXTERNAL_CONFIG_FILE: ${{ vars[matrix.config_variable] }}', external)
         self.assertIn('OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_FILE: ${{ vars[matrix.candidate_guard_variable] }}', external)
         self.assertIn('RELEASE_METADATA_READ_TOKEN', external)
         self.assertNotIn('SIGNING_CONFIG:', external)
         self.assertIn("grep -Eq '^ID=\"?ubuntu\"?$' /etc/os-release", external)
+        self.assertNotIn('OMNITERM_VPN_E2E_PROFILE_FILE', external)
 
         signing = text.split('\n  external_windows_signing:\n', 1)[1].split('\n  apple_submission:\n', 1)[0]
         self.assertIn('RELEASE_TARGET: external-windows-signing', signing)
@@ -277,7 +423,8 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertEqual(text.count('needs: resolve'), 2)
         self.assertEqual(text.count('needs: [resolve, validate]'), 3)
         publish = text.split('\n  publish:\n', 1)[1]
-        self.assertIn('needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation, ios_delivery, publication_prepare, external_tests, external_windows_signing, apple_submission]', publish)
+        self.assertIn('needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation, vpn_container, ios_delivery, publication_prepare, external_tests, external_windows_signing, apple_submission]', publish)
+        self.assertIn("needs.vpn_container.result == 'success'", publish)
         self.assertIn("needs.external_tests.result == 'success'", publish)
         self.assertIn("needs.external_windows_signing.result == 'success'", publish)
         self.assertIn('needs.resolve.result == \'success\'', publish)
@@ -351,7 +498,7 @@ class ReleaseMatrixTests(unittest.TestCase):
 
     def test_every_job_retains_only_encrypted_diagnostics(self):
         text = (ROOT / '.github/workflows/release.yml').read_text()
-        for name in ('integration', 'verify', 'validate', 'downloads', 'windows_download', 'ios', 'package_signatures', 'apple_testflight', 'installation', 'ios_delivery', 'publication_prepare', 'external_tests', 'external_windows_signing', 'apple_submission', 'publish'):
+        for name in ('integration', 'verify', 'validate', 'downloads', 'windows_download', 'ios', 'package_signatures', 'apple_testflight', 'installation', 'vpn_container', 'managed_rtc_provider', 'ios_delivery', 'publication_prepare', 'external_tests', 'external_windows_signing', 'apple_submission', 'publish'):
             job = re.split(r'\n  [a-z_]+:\n', text.split(f'\n  {name}:\n')[1], maxsplit=1)[0]
             with self.subTest(job=name):
                 self.assertIn('DIAGNOSTICS_PUBLIC_KEY:', job)
@@ -361,6 +508,7 @@ class ReleaseMatrixTests(unittest.TestCase):
 
     def test_signing_configuration_is_target_scoped_and_denied_to_unrelated_jobs(self):
         text = (ROOT / '.github/workflows/release.yml').read_text()
+        jobs = workflow_jobs(text)
         self.assertNotIn('secrets.SIGNING_CONFIG', text)
         downloads = text.split('\n  downloads:\n')[1].split('\n  windows_download:\n')[0]
         self.assertNotIn('id-token: write', downloads)
@@ -375,10 +523,23 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertIn('SIGNING_CONFIG: ${{ secrets.WINDOWS_SIGNING_CONFIG }}', windows)
 
         # Build-only verification, validate, and publish jobs must not receive SIGNING_CONFIG
-        for job_name in ('integration', 'installation', 'verify', 'validate', 'publish'):
+        for job_name in ('integration', 'installation', 'verify', 'validate', 'publish', 'vpn_container', 'managed_rtc_provider'):
             job_text = re.split(r'\n  [a-z_]+:\n', text.split(f'\n  {job_name}:\n')[1], maxsplit=1)[0]
             self.assertNotIn('SIGNING_CONFIG:', job_text, f'{job_name} must not expose signing secrets')
-            self.assertNotIn('id-token: write', job_text, f'{job_name} must not grant OIDC token permissions')
+            if job_name not in ('installation', 'vpn_container', 'managed_rtc_provider'):
+                self.assertNotIn('id-token: write', job_text, f'{job_name} must not grant OIDC token permissions')
+
+        installation = text.split('\n  installation:\n')[1].split('\n  ios_delivery:\n')[0]
+        self.assertIn('permissions:\n      contents: read\n      id-token: write', installation)
+        self.assertIn('OMNI_VPN_INSTALLATION_PROFILE_FILE: ${{ vars[matrix.vpn_profile_variable] || \'\' }}', installation)
+        self.assertIn('OMNI_VPN_RECEIVER_TRUSTED_JWKS_JSON: ${{ vars.OMNI_VPN_RECEIVER_TRUSTED_JWKS_JSON }}', installation)
+        self.assertIn('OMNI_VPN_TRUSTED_GATEWAY_POLICIES_JSON: ${{ vars.OMNI_VPN_TRUSTED_GATEWAY_POLICIES_JSON }}', installation)
+        for platform in ('linux', 'macos', 'windows', 'android', 'ios'):
+            self.assertIn('vpn_profile_variable: OMNI_VPN_INSTALLATION_PROFILE_' + platform.upper(), installation)
+        for name in ('integration', 'downloads', 'windows_download', 'ios', 'external_tests', 'publish'):
+            with self.subTest(vpn_trust_scope=name):
+                self.assertNotIn('OMNI_VPN_RECEIVER_TRUSTED_JWKS_JSON:', jobs[name])
+                self.assertNotIn('OMNI_VPN_TRUSTED_GATEWAY_POLICIES_JSON:', jobs[name])
 
         external_signing = text.split('\n  external_windows_signing:\n')[1].split('\n  apple_submission:\n')[0]
         self.assertIn('id-token: write', external_signing)
@@ -431,7 +592,7 @@ class ReleaseMatrixTests(unittest.TestCase):
                 'state object may contain only `cookies` and `origins`',
                 'separate from the SFU/MoQ provider file',
                 'distinct guarded OIDC owner within the', 'existing Linux `external_tests` job',
-                '176 exact case receipts'):
+                '181 exact case receipts'):
             with self.subTest(value=value):
                 self.assertIn(value, documentation)
         linux_fixtures = documentation.split('Linux requires\n', 1)[1].split(

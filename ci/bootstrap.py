@@ -2,6 +2,7 @@
 """Generic private-source launcher. Never prints source paths or process output."""
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -9,17 +10,28 @@ import re
 import shlex
 import signal
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
 
 
 BUILD_TARGETS = frozenset({'linux', 'windows', 'macos', 'android', 'web', 'ios'})
 APPLICATION_SOURCE_REPOSITORY = 'ql-owo-lp/omniterm'
 APPLICATION_SOURCE_ENTRYPOINT = 'scripts/release/entrypoint.py'
+MAX_REVIEWED_FILE_COUNT = 512
+MAX_REVIEWED_DIRECTORY_COUNT = 2048
+MAX_REVIEWED_PATH_BYTES = 4096
+MAX_REVIEWED_PATH_DEPTH = 64
+MAX_REVIEWED_FILE_BYTES = 4 * 1024 * 1024
+MAX_REVIEWED_TOTAL_BYTES = 16 * 1024 * 1024
+MAX_REVIEWED_TREE_BYTES = 1024 * 1024
+REVIEWED_TREE_TIMEOUT_SECONDS = 30
 RELEASE_TARGETS = frozenset({
     'resolve', 'integration', 'installation', 'package-signatures', 'apple-testflight',
-    'validate', 'ios-deliver', 'ios-submit', 'publication-prepare', 'external-tests',
+    'validate', 'ios-deliver', 'ios-submit', 'publication-prepare', 'vpn-container',
+    'managed-rtc-provider', 'external-tests',
     'external-windows-signing',
     'publish', *BUILD_TARGETS,
 })
@@ -30,6 +42,17 @@ def required(env, name):
     if not value.strip():
         raise ValueError('Required configuration is missing')
     return value
+
+
+def validate_managed_vpn_build_config(env, target, request):
+    if target == 'resolve' or request.get('build_only') is True:
+        return
+    try:
+        config = json.loads(env.get('BUILD_CONFIG') or '{}')
+    except (TypeError, json.JSONDecodeError):
+        raise ValueError('Full releases require OMNI_ENABLE_VPN=true') from None
+    if not isinstance(config, dict) or config.get('OMNI_ENABLE_VPN') != 'true':
+        raise ValueError('Full releases require OMNI_ENABLE_VPN=true')
 
 
 def validate(env):
@@ -60,6 +83,7 @@ def validate(env):
     if env.get('RELEASE_TARGET') not in RELEASE_TARGETS:
         raise ValueError('Invalid target')
     target = env['RELEASE_TARGET']
+    validate_managed_vpn_build_config(env, target, request)
     if (target != 'resolve'
             and not (target in BUILD_TARGETS and request.get('build_only') is True)):
         required(env, 'STORAGE_CONFIG')
@@ -163,25 +187,459 @@ def git_ssh_candidates(git):
     return [parent / 'usr/bin/ssh.exe' for parent in Path(git).parents]
 
 
+def bounded_git_output(args, cwd, env, log, max_bytes, timeout):
+    """Capture bounded command output without buffering an untrusted tree listing."""
+    process = subprocess.Popen(
+        args, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=log,
+    )
+    output = bytearray()
+    overflow = threading.Event()
+    failures = []
+
+    def collect():
+        try:
+            while True:
+                block = process.stdout.read(65536)
+                if not block:
+                    return
+                remaining = max_bytes - len(output)
+                if len(block) > remaining:
+                    if remaining:
+                        output.extend(block[:remaining])
+                    overflow.set()
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+                    return
+                output.extend(block)
+        except OSError as error:
+            failures.append(error)
+            try:
+                process.kill()
+            except OSError:
+                pass
+
+    collector = threading.Thread(target=collect, daemon=True)
+    collector.start()
+    timed_out = False
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        process.kill()
+        returncode = process.wait()
+    finally:
+        collector.join()
+        process.stdout.close()
+    if timed_out:
+        raise ValueError('Reviewed source tree lookup timed out')
+    if overflow.is_set():
+        raise ValueError('Reviewed source tree exceeds its bound')
+    if failures:
+        raise ValueError('Reviewed source tree lookup failed') from None
+    if returncode:
+        raise subprocess.CalledProcessError(returncode, args)
+    return bytes(output)
+
+
+def verify_reviewed_worktree(source, sha, directory, env, log, *, require_read_only=False):
+    """Verify every materialized regular file that can be imported."""
+    directory = PurePosixPath(directory)
+    if (directory.is_absolute() or not directory.parts
+            or any(part in ('', '.', '..') for part in directory.parts)):
+        raise ValueError('Unsafe reviewed source directory')
+
+    git_env = {**env, 'GIT_NO_REPLACE_OBJECTS': '1'}
+    records = bounded_git_output(
+        ['git', 'ls-tree', '-l', '-r', '-z', sha, '--', directory.as_posix()],
+        source, git_env, log, MAX_REVIEWED_TREE_BYTES,
+        REVIEWED_TREE_TIMEOUT_SECONDS,
+    )
+
+    prefix = os.fsencode(directory.as_posix()) + b'/'
+    expected = set()
+    total_bytes = 0
+    for record in records.split(b'\0'):
+        if not record:
+            continue
+        metadata, separator, name = record.partition(b'\t')
+        fields = metadata.split()
+        if (not separator or len(fields) != 4 or not name.startswith(prefix)
+                or len(name) > MAX_REVIEWED_PATH_BYTES
+                or any(part in (b'', b'.', b'..') for part in name.split(b'/'))):
+            raise ValueError('Reviewed source differs from its Git tree')
+        if len(name.split(b'/')) > MAX_REVIEWED_PATH_DEPTH:
+            raise ValueError('Reviewed source exceeds its verification bounds')
+        mode, kind, object_id, size_text = fields
+        if mode not in (b'100644', b'100755') or kind != b'blob':
+            raise ValueError('Reviewed source differs from its Git tree')
+        try:
+            expected_size = int(size_text)
+        except ValueError:
+            raise ValueError('Reviewed source differs from its Git tree') from None
+        if (expected_size < 0 or expected_size > MAX_REVIEWED_FILE_BYTES
+                or total_bytes + expected_size > MAX_REVIEWED_TOTAL_BYTES
+                or len(expected) >= MAX_REVIEWED_FILE_COUNT):
+            raise ValueError('Reviewed source exceeds its verification bounds')
+        total_bytes += expected_size
+        path = source
+        parts = name.split(b'/')
+        for part in parts[:-1]:
+            path /= os.fsdecode(part)
+            try:
+                parent_info = path.lstat()
+            except OSError:
+                raise ValueError('Reviewed source differs from its Git tree') from None
+            if not stat.S_ISDIR(parent_info.st_mode) or is_reparse_point(parent_info):
+                raise ValueError('Reviewed source differs from its Git tree')
+        path /= os.fsdecode(parts[-1])
+        try:
+            info = path.lstat()
+        except OSError:
+            raise ValueError('Reviewed source differs from its Git tree') from None
+        if (not stat.S_ISREG(info.st_mode) or is_reparse_point(info)
+                or info.st_size != expected_size
+                or info.st_nlink != 1
+                or (os.name != 'nt'
+                    and bool(info.st_mode & stat.S_IXUSR) != (mode == b'100755'))
+                or (require_read_only and info.st_mode & 0o222)):
+            raise ValueError('Reviewed source differs from its Git tree')
+
+        digest = hashlib.sha1(
+            b'blob ' + str(expected_size).encode('ascii') + b'\0'
+        )
+        actual_size = 0
+        flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0)
+        try:
+            descriptor = os.open(path, flags)
+        except OSError:
+            raise ValueError('Reviewed source differs from its Git tree')
+        with os.fdopen(descriptor, 'rb') as stream:
+            opened_info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(opened_info.st_mode)
+                    or opened_info.st_nlink != 1
+                    or (info.st_dev, info.st_ino) != (opened_info.st_dev, opened_info.st_ino)):
+                raise ValueError('Reviewed source differs from its Git tree')
+            for block in iter(lambda: stream.read(65536), b''):
+                actual_size += len(block)
+                if actual_size > expected_size:
+                    raise ValueError('Reviewed source differs from its Git tree')
+                digest.update(block)
+        if actual_size != expected_size or digest.hexdigest().encode('ascii') != object_id:
+            raise ValueError('Reviewed source differs from its Git tree')
+        expected.add(name)
+
+    materialized = source.joinpath(*directory.parts)
+    try:
+        materialized_info = materialized.lstat()
+    except OSError:
+        raise ValueError('Reviewed source differs from its Git tree') from None
+    if (not stat.S_ISDIR(materialized_info.st_mode) or is_reparse_point(materialized_info)
+            or (require_read_only and materialized_info.st_mode & 0o222)):
+        raise ValueError('Reviewed source differs from its Git tree')
+    if require_read_only:
+        ancestor = materialized.parent
+        while ancestor != source:
+            try:
+                ancestor_info = ancestor.lstat()
+            except OSError:
+                raise ValueError('Reviewed source differs from its Git tree') from None
+            if (not stat.S_ISDIR(ancestor_info.st_mode) or is_reparse_point(ancestor_info)
+                    or ancestor_info.st_mode & 0o222):
+                raise ValueError('Reviewed source differs from its Git tree')
+            ancestor = ancestor.parent
+
+    def relative_name(path):
+        relative = path.relative_to(source)
+        name = os.fsencode(relative.as_posix())
+        if (len(name) > MAX_REVIEWED_PATH_BYTES
+                or len(relative.parts) > MAX_REVIEWED_PATH_DEPTH):
+            raise ValueError('Reviewed source exceeds its verification bounds')
+        return name
+
+    observed = set()
+    pending = [materialized]
+    directory_count = 1
+    if directory_count > MAX_REVIEWED_DIRECTORY_COUNT:
+        raise ValueError('Reviewed source exceeds its verification bounds')
+    while pending:
+        parent = pending.pop()
+        with os.scandir(parent) as entries:
+            for entry in entries:
+                path = Path(entry.path)
+                name = relative_name(path)
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode) and not is_reparse_point(info):
+                    if require_read_only and info.st_mode & 0o222:
+                        raise ValueError('Reviewed source differs from its Git tree')
+                    directory_count += 1
+                    if directory_count > MAX_REVIEWED_DIRECTORY_COUNT:
+                        raise ValueError('Reviewed source exceeds its verification bounds')
+                    pending.append(path)
+                elif (stat.S_ISREG(info.st_mode) and not is_reparse_point(info)
+                      and info.st_nlink == 1):
+                    observed.add(name)
+                    if len(observed) > MAX_REVIEWED_FILE_COUNT:
+                        raise ValueError('Reviewed source exceeds its verification bounds')
+                else:
+                    raise ValueError('Reviewed source differs from its Git tree')
+    if observed != expected:
+        raise ValueError('Reviewed source differs from its Git tree')
+
+
+def is_reparse_point(info):
+    flag = getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)
+    return bool(getattr(info, 'st_file_attributes', 0) & flag)
+
+
+def same_reviewed_entry(expected, actual, *, directory):
+    expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+    return (expected_type(expected.st_mode) and expected_type(actual.st_mode)
+            and not is_reparse_point(actual)
+            and (expected.st_dev, expected.st_ino) == (actual.st_dev, actual.st_ino)
+            and (directory or (expected.st_nlink == actual.st_nlink == 1)))
+
+
+def windows_chmod_reviewed_entry(path, expected, mode, *, directory):
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class FileBasicInfo(ctypes.Structure):
+        _fields_ = [('CreationTime', ctypes.c_longlong),
+                    ('LastAccessTime', ctypes.c_longlong),
+                    ('LastWriteTime', ctypes.c_longlong),
+                    ('ChangeTime', ctypes.c_longlong),
+                    ('FileAttributes', wintypes.DWORD)]
+
+    class FileAttributeTagInfo(ctypes.Structure):
+        _fields_ = [('FileAttributes', wintypes.DWORD),
+                    ('ReparseTag', wintypes.DWORD)]
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    create_file = kernel.CreateFileW
+    create_file.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                            wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
+                            wintypes.HANDLE]
+    create_file.restype = wintypes.HANDLE
+    get_attribute_info = kernel.GetFileInformationByHandleEx
+    get_attribute_info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID,
+                                   wintypes.DWORD]
+    get_attribute_info.restype = wintypes.BOOL
+    get_basic_info = kernel.GetFileInformationByHandleEx
+    get_basic_info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID,
+                               wintypes.DWORD]
+    get_basic_info.restype = wintypes.BOOL
+    set_basic_info = kernel.SetFileInformationByHandle
+    set_basic_info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID,
+                               wintypes.DWORD]
+    set_basic_info.restype = wintypes.BOOL
+    close_handle = kernel.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    share = 0x00000001 | 0x00000002 | 0x00000004
+    flags = 0x00200000 | (0x02000000 if directory else 0)  # Open reparse points, not targets.
+    handle = create_file(str(path), 0x00000080 | 0x00000100, share, None, 3, flags, None)
+    invalid_handle = ctypes.c_void_p(-1).value
+    if handle in (None, invalid_handle):
+        raise ValueError('Reviewed source changed during permission update')
+    descriptor = None
+    try:
+        handle_value = handle if isinstance(handle, int) else handle.value
+        try:
+            descriptor = msvcrt.open_osfhandle(handle_value, os.O_RDONLY | os.O_BINARY)
+        except OSError:
+            close_handle(handle)
+            handle = None
+            raise
+        handle = None  # The descriptor now owns the native handle.
+        actual_stat = os.fstat(descriptor)
+        if not same_reviewed_entry(expected, actual_stat, directory=directory):
+            raise ValueError('Reviewed source changed during permission update')
+        handle_value = msvcrt.get_osfhandle(descriptor)
+        attributes = FileAttributeTagInfo()
+        if not get_attribute_info(handle_value, 9, ctypes.byref(attributes),
+                                  ctypes.sizeof(attributes)):
+            raise ValueError('Reviewed source changed during permission update')
+        attrs = attributes.FileAttributes
+        if bool(attrs & 0x10) != directory or attrs & 0x400:
+            raise ValueError('Reviewed source changed during permission update')
+
+        basic = FileBasicInfo()
+        if not get_basic_info(handle_value, 0, ctypes.byref(basic), ctypes.sizeof(basic)):
+            raise ValueError('Secure reviewed source permissions are unavailable')
+        if mode & stat.S_IWUSR:
+            basic.FileAttributes &= ~0x1
+        else:
+            basic.FileAttributes |= 0x1
+        if not set_basic_info(handle_value, 0, ctypes.byref(basic), ctypes.sizeof(basic)):
+            raise ValueError('Secure reviewed source permissions are unavailable')
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        elif handle is not None:
+            close_handle(handle)
+
+
+def chmod_reviewed_entry(path, expected, mode, *, directory):
+    """Change permissions through a handle bound to the enumerated inode."""
+    if os.name != 'nt':
+        if not hasattr(os, 'O_NOFOLLOW') or not hasattr(os, 'fchmod'):
+            raise ValueError('Secure reviewed source permissions are unavailable')
+        flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_CLOEXEC', 0)
+        if directory:
+            flags |= getattr(os, 'O_DIRECTORY', 0)
+        try:
+            descriptor = os.open(path, flags)
+        except OSError:
+            raise ValueError('Reviewed source changed during permission update') from None
+        try:
+            actual = os.fstat(descriptor)
+            if not same_reviewed_entry(expected, actual, directory=directory):
+                raise ValueError('Reviewed source changed during permission update')
+            os.fchmod(descriptor, mode)
+        finally:
+            os.close(descriptor)
+        return
+
+    try:
+        windows_chmod_reviewed_entry(path, expected, mode, directory=directory)
+    except (OSError, AttributeError):
+        raise ValueError('Secure reviewed source permissions are unavailable') from None
+
+
+def freeze_reviewed_worktree(source, directory, *, freeze_parent=False):
+    directory = PurePosixPath(directory)
+    if (directory.is_absolute() or not directory.parts
+            or any(part in ('', '.', '..') for part in directory.parts)):
+        raise ValueError('Unsafe reviewed source directory')
+    materialized = source.joinpath(*directory.parts)
+    try:
+        root_info = materialized.lstat()
+    except OSError:
+        raise ValueError('Reviewed source differs from its Git tree') from None
+    if not stat.S_ISDIR(root_info.st_mode) or is_reparse_point(root_info):
+        raise ValueError('Reviewed source differs from its Git tree')
+    pending = [materialized]
+    directories = []
+    directory_count = 1
+    if freeze_parent and materialized.parent != source:
+        parent_info = materialized.parent.lstat()
+        if not stat.S_ISDIR(parent_info.st_mode) or is_reparse_point(parent_info):
+            raise ValueError('Reviewed source differs from its Git tree')
+        directories.append((materialized.parent, parent_info))
+        directory_count += 1
+    directories.append((materialized, root_info))
+    files = []
+    if directory_count > MAX_REVIEWED_DIRECTORY_COUNT:
+        raise ValueError('Reviewed source exceeds its verification bounds')
+    while pending:
+        parent = pending.pop()
+        with os.scandir(parent) as entries:
+            for entry in entries:
+                path = Path(entry.path)
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode) and not is_reparse_point(info):
+                    directory_count += 1
+                    if directory_count > MAX_REVIEWED_DIRECTORY_COUNT:
+                        raise ValueError('Reviewed source exceeds its verification bounds')
+                    pending.append(path)
+                    directories.append((path, info))
+                elif (stat.S_ISREG(info.st_mode) and not is_reparse_point(info)
+                      and info.st_nlink == 1):
+                    files.append((path, info))
+                    if len(files) > MAX_REVIEWED_FILE_COUNT:
+                        raise ValueError('Reviewed source exceeds its verification bounds')
+                else:
+                    raise ValueError('Reviewed source differs from its Git tree')
+    for path, info in files:
+        chmod_reviewed_entry(path, info, stat.S_IMODE(info.st_mode) & ~0o222,
+                             directory=False)
+    for path, info in reversed(directories):
+        chmod_reviewed_entry(path, info, stat.S_IMODE(info.st_mode) & ~0o222,
+                             directory=True)
+
+
+def thaw_reviewed_worktree(source, directory, *, thaw_parent=False):
+    directory = PurePosixPath(directory)
+    if (directory.is_absolute() or not directory.parts
+            or any(part in ('', '.', '..') for part in directory.parts)):
+        return
+    materialized = source.joinpath(*directory.parts)
+    try:
+        materialized_info = materialized.lstat()
+    except OSError:
+        return
+    if not stat.S_ISDIR(materialized_info.st_mode) or is_reparse_point(materialized_info):
+        return
+    pending = [materialized]
+    directories = []
+    files = []
+    directory_count = 1
+    if directory_count > MAX_REVIEWED_DIRECTORY_COUNT:
+        raise ValueError('Reviewed source exceeds its cleanup bounds')
+    while pending:
+        parent = pending.pop()
+        directories.append(parent)
+        with os.scandir(parent) as entries:
+            for entry in entries:
+                path = Path(entry.path)
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode) and not is_reparse_point(info):
+                    directory_count += 1
+                    if directory_count > MAX_REVIEWED_DIRECTORY_COUNT:
+                        raise ValueError('Reviewed source exceeds its cleanup bounds')
+                    pending.append(path)
+                elif (stat.S_ISREG(info.st_mode) and not is_reparse_point(info)
+                      and info.st_nlink == 1):
+                    files.append((path, info))
+                    if len(files) > MAX_REVIEWED_FILE_COUNT:
+                        raise ValueError('Reviewed source exceeds its cleanup bounds')
+    for path, info in files:
+        chmod_reviewed_entry(path, info, stat.S_IMODE(info.st_mode) | 0o200,
+                             directory=False)
+    for path in reversed(directories):
+        info = path.lstat()
+        if stat.S_ISDIR(info.st_mode) and not is_reparse_point(info):
+            chmod_reviewed_entry(path, info, stat.S_IMODE(info.st_mode) | 0o700,
+                                 directory=True)
+    if thaw_parent and materialized.parent != source:
+        info = materialized.parent.lstat()
+        if stat.S_ISDIR(info.st_mode) and not is_reparse_point(info):
+            chmod_reviewed_entry(materialized.parent, info,
+                                 stat.S_IMODE(info.st_mode) | 0o700, directory=True)
+
+
 def checkout_reviewed_entrypoint(source, sha, entry, env, log):
     """Materialize executable source only after actual Git ancestry verification."""
     # Compare canonical paths on both sides: macOS temporary directories and
     # Windows short-path aliases can otherwise make a valid child look external.
     # The entrypoint itself must still be a regular, non-symlink file inside it.
     source = Path(source).resolve(strict=True)
-    invoke(['git', 'merge-base', '--is-ancestor', sha, 'refs/remotes/origin/reviewed'], source, env, log)
+    git_env = {**env, 'GIT_NO_REPLACE_OBJECTS': '1'}
+    invoke(['git', 'merge-base', '--is-ancestor', sha, 'refs/remotes/origin/reviewed'], source, git_env, log)
     # Git can materialize a tracked symlink as an ordinary file on hosts with
     # core.symlinks=false. Check the reviewed tree mode as well as the filesystem.
-    tree_record = capture(['git', 'ls-tree', '-z', sha, '--', entry.as_posix()], source, env)
+    tree_record = capture(['git', 'ls-tree', '-z', sha, '--', entry.as_posix()], source, git_env)
     record, _, extra = tree_record.partition('\0')
     header, separator, path = record.partition('\t')
     fields = header.split()
     if (extra or not separator or path != entry.as_posix() or len(fields) != 3
             or fields[0] not in ('100644', '100755') or fields[1] != 'blob'):
         raise ValueError('Unsafe entrypoint')
-    invoke(['git', 'sparse-checkout', 'init', '--cone'], source, env, log)
-    invoke(['git', 'sparse-checkout', 'set', entry.parent.as_posix()], source, env, log)
-    invoke(['git', 'checkout', '--quiet', '--detach', sha], source, env, log)
+    invoke(['git', 'sparse-checkout', 'init', '--cone'], source, git_env, log)
+    checkout_directory = entry.parent.parent
+    if not checkout_directory.parts:
+        checkout_directory = entry.parent
+    invoke(['git', 'sparse-checkout', 'set', checkout_directory.as_posix()],
+           source, git_env, log)
+    invoke(['git', 'checkout', '--quiet', '--detach', sha], source, git_env, log)
+    verify_reviewed_worktree(source, sha, entry.parent, git_env, log)
+    freeze_reviewed_worktree(source, entry.parent, freeze_parent=True)
+    verify_reviewed_worktree(source, sha, entry.parent, git_env, log, require_read_only=True)
     script = source.joinpath(*entry.parts)
     if script.is_symlink() or not script.is_file() or not script.resolve().is_relative_to(source):
         raise ValueError('Unsafe entrypoint')
@@ -408,7 +866,8 @@ def main():
         hosts.chmod(0o600)
         source = root / 'source'
         source.mkdir()
-        env.update(GIT_TERMINAL_PROMPT='0', GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull)
+        env.update(GIT_TERMINAL_PROMPT='0', GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+                   GIT_NO_REPLACE_OBJECTS='1')
         for name in ('GH_DEBUG', 'GIT_TRACE', 'GIT_TRACE_PACKET', 'GIT_TRACE_CURL', 'GIT_CURL_VERBOSE',
                      'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_ALTERNATE_OBJECT_DIRECTORIES'):
             env.pop(name, None)
@@ -449,8 +908,11 @@ def main():
                 # The private entrypoint expands its checkout, installs pinned tools,
                 # performs release tasks and retains diagnostics only in private storage.
                 stage = 'private-task'
-                invoke([sys.executable, '-I', str(script)], source,
-                       private_task_environment(env, submodule_token), log,
+                task_command = [sys.executable, '-I', '-B', str(script)]
+                task_env = private_task_environment(env, submodule_token)
+                verify_reviewed_worktree(source, sha, entry.parent, env, log,
+                                         require_read_only=True)
+                invoke(task_command, source, task_env, log,
                        timeout=21600 if target == 'integration' else 10800 if target == 'installation' else 10000)
         except Exception:
             print('Release task failed. Inspect private diagnostics and any completed stages before retrying.')
@@ -463,6 +925,7 @@ def main():
             key.unlink(missing_ok=True)
             if target != 'resolve':
                 seal_diagnostics(root, recipient, env['RUNNER_TEMP'])
+                thaw_reviewed_worktree(source, entry.parent, thaw_parent=True)
         print('Release task completed.')
         return 0
 

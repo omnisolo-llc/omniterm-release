@@ -64,6 +64,62 @@ defaults to `0.1.0`. Platform job names include a UTC workflow identifier in
 `yyyymmddHHmm` format. Supply a fresh shared app build number from `1` to `9999`.
 Configure the source secrets for `ql-owo-lp/omniterm`, branch `main`, and
 `scripts/release/entrypoint.py`; the launcher rejects a different source identity.
+Configure repository variable `OMNITERM_VPN_PROVIDER_PUBLIC_KEY` as the canonical
+unpadded URL-safe base64 encoding of the managed VPN Worker's Ed25519 public key.
+It must decode to exactly 32 nonzero bytes. This public key is release metadata;
+keep its private signing key in the Worker environment only. Every release task
+except input resolution requires the variable and fails closed when it is missing.
+The protected `BUILD_CONFIG` secret must be a JSON object with
+`"OMNI_ENABLE_VPN":"true"`; all full-release evidence and artifact proofs bind
+the managed VPN contract and its provider-key fingerprint. Build-only verification
+does not publish and may omit that release setting.
+Full public builds do not need desktop tun2socks or Android Hev artifacts. Keep
+`OMNI_ENABLE_LEGACY_SOCKS_VPN` unset or `false`; the launcher rejects it for
+publishing requests. A separate non-publishing compatibility job may enable it
+with its own pinned fixture/runtime inputs. Windows full-device VPN still needs
+the pinned `OMNI_WINTUN_WINDOWS_URL` and `OMNI_WINTUN_WINDOWS_SHA256` inputs.
+The protected `vpn-installation-linux`, `vpn-installation-macos`,
+`vpn-installation-windows`, `vpn-installation-android`, and
+`vpn-installation-ios` environments each need the installation job's required
+source, build, storage, and diagnostics secrets, plus that platform's device,
+install-config, and owner-only profile variables. Each environment must have the
+same reviewers and `main` branch restriction as `downloads`. Configure the
+owner-only profile variable as `OMNI_VPN_INSTALLATION_PROFILE_<PLATFORM>` for its
+matching platform. Set `OMNI_VPN_RECEIVER_TRUSTED_JWKS_JSON` and
+`OMNI_VPN_TRUSTED_GATEWAY_POLICIES_JSON` in each environment to the reviewed
+receiver signing keys and exact gateway/policy/CIDR trust map. The web installation
+job remains in `downloads` and does not produce VPN route evidence. The installation
+stage attests each native artifact's 16 route and egress cells to its package hash
+across public and behind-NAT gateways, direct and relay underlays, DNS off/on, and
+IPv4/IPv6. Web/workstation-web and service/agent packages must prove the full-device
+VPN surface is unavailable. Receiver observer credentials remain in the runner's
+native Secret Service and are never workflow variables or profile literals.
+The protected `installation` and `vpn-container` jobs use `id-token: write` only
+for signed same-run VPN evidence; neither receives app-signing configuration.
+The protected `vpn-container` environment needs an owner-only
+`OMNITERM_VPN_E2E_PROFILE_FILE` and distinct self-hosted labels
+`omniterm-release-vpn-kmod-present` and `omniterm-release-vpn-kmod-absent`.
+Configure `OMNITERM_VPN_E2E_CLIENT_BASE_IMAGE`, `OMNITERM_VPN_E2E_GATEWAY_IMAGE`,
+`OMNITERM_VPN_E2E_RELAY_IMAGE`, `OMNITERM_VPN_E2E_RECEIVER_IMAGE`, and
+`OMNITERM_VPN_E2E_DNS_IMAGE` as OCI references pinned to `sha256` digests. The
+source task builds the client fixture locally from the exact candidate Linux
+package and binds its image ID, base-image digest, helper, installer, native
+library, build context, and four service-image digests into private run evidence;
+no registry push is used for that candidate image.
+Each Linux runner must have Docker and `/dev/net/tun`, with `/sys/module/wireguard`
+matching its assigned state. Each executes 16 route cells plus cutoff cases;
+together they produce the required 32-cell container matrix. Missing profiles,
+runners, or same-run route receipts block iOS delivery and publication.
+Protected release tasks require an isolated runner that accepts one job at a time
+and is not shared with untrusted jobs. The launcher verifies and marks its import
+tree read-only before execution, but those permissions are not immutable against
+another process running as the same OS account.
+Register dedicated self-hosted runner labels `omniterm-release-linux`,
+`omniterm-release-macos`, `omniterm-release-windows`, `omniterm-release-android`,
+`omniterm-release-ios`, `omniterm-release-web`, and
+`omniterm-release-managed-rtc`. Integration and installation jobs require
+attached devices or browser fixtures on those runners; the external acceptance
+jobs reuse the Linux, macOS, and Windows runners.
 Leave **build_only** enabled and
 **ios_action=skip** to check Windows, Linux, macOS, Android, browser bundles, and unsigned iOS device builds
 without signing, storage credentials, or publication. Choose **verify_target** to
@@ -103,6 +159,10 @@ verification does not substitute for these application tests.
 
 Before promotion, three additional protected `external-tests` runners execute the
 exact Linux, macOS, and Windows acceptance inventory against the frozen candidate.
+Those producer jobs have `id-token: write` only to request short-lived GitHub OIDC
+attestations bound to the exact report and execution-log bytes; they receive no
+application signing configuration. Keep these jobs behind the protected
+`external-tests` environment.
 Configure the `external-tests` environment variables
 `OMNI_EXTERNAL_CONFIG_LINUX`, `OMNI_EXTERNAL_CONFIG_MACOS`, and
 `OMNI_EXTERNAL_CONFIG_WINDOWS` as paths to private JSON configuration files,
@@ -114,7 +174,52 @@ Each file contains only `platform` and `fixtures`. Linux requires
 `storage_test_config_file`, `redirect_url`, `turn_test_env_file`,
 `rust_test_environment_file`, and `live_codex_environment_file`, plus the
 owner-only `live_share_provider_environment_file` and
-`production_oidc_environment_file` settings files described below. Set
+`production_oidc_environment_file` settings files described below. It also
+requires an owner-only `managed_rtc_provider_environment_file` containing only
+the approved provider environment. Set that JSON file to exactly
+`CLOUDFLARE_ACCOUNT_ID`,
+`RTC_INGRESS_CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_TURN_KEY_ID`,
+`NATIVE_RTC_INGRESS`, `LIVE_SHARE_MOQ_CONTROL_ORIGIN`,
+`LIVE_SHARE_MOQ_PUBLIC_ORIGIN`, `LIVE_SHARE_MOQ_USAGE_ORIGIN`,
+`MANAGED_VPN_PROVIDER_ID`, `MANAGED_VPN_GATEWAY_ID`,
+`MANAGED_VPN_GATEWAY_PUBLIC_KEY`, `MANAGED_VPN_PROVIDER_PUBLIC_KEY`,
+`MANAGED_VPN_ENDPOINTS`, `MANAGED_VPN_DNS_SERVERS`,
+`MANAGED_VPN_RELAY_REPLICA_IDS`, and
+`MANAGED_RTC_APPROVED_COST_CEILING_MICRO_USD`. Do not put provider results or
+`MANAGED_RTC_ACCEPTANCE_EVIDENCE` in this file. Its values must match the
+`MANAGED_RTC_PROVIDER_ENVIRONMENT_FILE` used by the protected producer exactly.
+
+The separate `managed-rtc-provider` job runs after candidate preparation and
+before the Linux external-test job on a dedicated
+`omniterm-release-managed-rtc` runner. Configure that protected environment's
+`MANAGED_RTC_PROVIDER_ENVIRONMENT_FILE` and
+`MANAGED_RTC_IDENTITY_FIXTURE_FILE` variables as paths to owner-only files on the
+runner. The provider file must use the exact keys listed above. The identity
+fixture is a reusable owner-only template for two disposable account/connector
+identities, independent receiver SSH/key configuration paths, a low quota
+budget, Cloudflare TURN Analytics access, and an analytics deadline. The
+producer injects the current protected source SHA, builder SHA, workflow run and
+attempt in memory; do not hard-code those run identities in the fixture. It
+builds the reviewed RTC probe, executes the five live cases, obtains a GitHub
+OIDC signature over the exact report and log, and stores the bundle only in
+private object storage under the source, builder, run and attempt identity.
+`external_tests` reads and verifies that same-run object; do not enter acceptance
+results in a repository or environment secret, and do not upload the bundle as a
+GitHub Actions artifact.
+
+Keep provider values inside those owner-only files. The workflow passes their
+paths and grants `id-token: write` to the dedicated producer job; it does not
+pass the Cloudflare Analytics token or disposable account sessions as workflow
+variables. The fixture JSON has exactly `schema`, `active_identity`,
+`quota_identity`, `quota_remaining_bytes`, `quota_attempt_bytes`,
+`provider_usage_deadline_seconds`, `api_origin`, and
+`CLOUDFLARE_TURN_ANALYTICS_TOKEN`. The identities bind separate disposable
+accounts, active sessions, connectors, targets, and owner-only receiver config
+paths. The active identity also binds the current registration revision and a
+fresh, one-use action-bound step-up token. Each receiver config pins its SSH
+identity/known-hosts files and Ed25519 event-signing public key. Protect the
+fixture and every referenced file with owner-only permissions.
+
 `OMNI_EXTERNAL_CONFIG_LINUX.fixtures.live_share_provider_environment_file` to
 an absolute path to a second JSON file on the Linux runner; protect it with mode `0600`. Replace these placeholders while keeping exactly these six string fields
 shown, with both enable flags set to `true`:
@@ -164,10 +269,14 @@ existing Linux `external_tests` job, never to runner-wide settings or other owne
 Missing or invalid OIDC configuration prevents its receipt and blocks
 `require_all`.
 
-The current external gate requires 176 exact case receipts: 38 Python platform or
+The current external gate requires 181 exact case receipts: 38 Python platform or
 toolchain cases, 131 Rust cases, one live MCP/Node case, four live relay/provider
-cases, one production OIDC browser case, and one Windows signing case. All receipts
-must match the candidate source, builder, run, and attempt before publication.
+cases, one production OIDC browser case, five managed RTC provider cases, and one
+Windows signing case. The managed RTC receipts prove a nominated TURN candidate,
+bidirectional receiver bytes, owner cutoff and lease/device revocation, byte quota
+enforcement, and measured provider cost below the approved ceiling. All receipts
+must match the candidate source, builder, run, attempt, and provider environment
+before publication.
 
 The Linux environment also needs a read-only `RELEASE_METADATA_READ_TOKEN` for
 the real GitHub metadata checks. These configurations supply real provider access
