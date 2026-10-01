@@ -293,12 +293,14 @@ class BootstrapExecutionTests(unittest.TestCase):
     def repository(self, root):
         source = root / 'source'
         source.mkdir()
+        source = source.resolve(strict=True)
         env = {**os.environ, 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull,
                'GIT_AUTHOR_NAME': 'Launcher contract', 'GIT_AUTHOR_EMAIL': 'launcher@example.invalid',
                'GIT_COMMITTER_NAME': 'Launcher contract', 'GIT_COMMITTER_EMAIL': 'launcher@example.invalid'}
         def git(*args):
             return subprocess.check_output(['git', *args], cwd=source, env=env, stderr=subprocess.PIPE, text=True).strip()
         git('init', '-q')
+        git('config', 'core.autocrlf', 'false')
         task = source / 'scripts/task.py'
         task.parent.mkdir()
         task.write_text("import os,sys; print('private actual child output'); sys.exit(int(os.environ.get('CHILD_EXIT_CODE','0')))\n")
@@ -477,10 +479,10 @@ class BootstrapExecutionTests(unittest.TestCase):
                                   wraps=b.verify_reviewed_worktree) as verify:
                     script = b.checkout_reviewed_entrypoint(
                         source, sha, PurePosixPath('scripts/task.py'), env, log)
-            self.assertEqual(script, source / 'scripts/task.py')
+            self.assertEqual(script.resolve(), (source / 'scripts/task.py').resolve())
             self.assertEqual(verify.call_count, 2)
             self.assertEqual(verify.call_args.args[:3],
-                             (source, sha, PurePosixPath('scripts')))
+                             (source.resolve(), sha, PurePosixPath('scripts')))
             self.assertEqual(verify.call_args.args[3]['GIT_NO_REPLACE_OBJECTS'], '1')
             self.assertTrue(verify.call_args.kwargs['require_read_only'])
             self.assertFalse(script.stat().st_mode & 0o222)
@@ -507,7 +509,7 @@ class BootstrapExecutionTests(unittest.TestCase):
             self.assertFalse((source / 'scripts').stat().st_mode & 0o222)
             b.thaw_reviewed_worktree(
                 source, PurePosixPath('scripts/release'), thaw_parent=True)
-            self.assertEqual(script, release_script)
+            self.assertEqual(script.resolve(), release_script.resolve())
             self.assertEqual(git('rev-parse', 'HEAD'), sha)
 
     def test_submodule_credential_is_added_only_to_private_task_environment(self):

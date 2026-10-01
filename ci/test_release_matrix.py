@@ -227,7 +227,11 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertIn('MANAGED_RTC_IDENTITY_FIXTURE_FILE: ${{ vars.MANAGED_RTC_IDENTITY_FIXTURE_FILE }}',
                       producer)
         self.assertIn('RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}', producer)
-        self.assertIn('PUBLIC_BUILDER_SHA', (ROOT.parents[0] / 'scripts/release/entrypoint.py').read_text())
+        launcher = Path(bootstrap_tests.b.__file__).read_text()
+        self.assertIn("env['PUBLIC_BUILDER_SHA'] = required(env, 'GITHUB_SHA')", launcher)
+        self.assertIn('task_env = private_task_environment(env, submodule_token)', launcher)
+        task_env = bootstrap_tests.b.private_task_environment({'PUBLIC_BUILDER_SHA': 'a' * 40}, None)
+        self.assertEqual(task_env['PUBLIC_BUILDER_SHA'], 'a' * 40)
         self.assertIn('STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}', producer)
         self.assertNotIn('GH_TOKEN:', producer)
         self.assertNotIn('SIGNING_CONFIG:', producer)
@@ -423,7 +427,7 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertEqual(text.count('needs: resolve'), 2)
         self.assertEqual(text.count('needs: [resolve, validate]'), 3)
         publish = text.split('\n  publish:\n', 1)[1]
-        self.assertIn('needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation, vpn_container, ios_delivery, publication_prepare, external_tests, external_windows_signing, apple_submission]', publish)
+        self.assertIn('needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation, vpn_container, ios_delivery, publication_prepare, managed_rtc_provider, external_tests, external_windows_signing, apple_submission]', publish)
         self.assertIn("needs.vpn_container.result == 'success'", publish)
         self.assertIn("needs.external_tests.result == 'success'", publish)
         self.assertIn("needs.external_windows_signing.result == 'success'", publish)
