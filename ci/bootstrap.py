@@ -370,7 +370,7 @@ def verify_reviewed_worktree(source, sha, directory, env, log, *, require_read_o
             for entry in entries:
                 path = Path(entry.path)
                 name = relative_name(path)
-                info = entry.stat(follow_symlinks=False)
+                info = reviewed_entry_info(path, entry)
                 if stat.S_ISDIR(info.st_mode) and not is_reparse_point(info):
                     if require_read_only and info.st_mode & 0o222:
                         raise ValueError('Reviewed source differs from its Git tree')
@@ -392,6 +392,15 @@ def verify_reviewed_worktree(source, sha, directory, env, log, *, require_read_o
 def is_reparse_point(info):
     flag = getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)
     return bool(getattr(info, 'st_file_attributes', 0) & flag)
+
+
+def reviewed_entry_info(path, entry):
+    # Windows DirEntry metadata omits file identity and link-count fields needed
+    # by the verifier and handle-bound permission updates. lstat keeps the
+    # no-follow check while obtaining the corresponding file-handle metadata.
+    if os.name == 'nt':
+        return path.lstat()
+    return entry.stat(follow_symlinks=False)
 
 
 def same_reviewed_entry(expected, actual, *, directory):
@@ -541,7 +550,7 @@ def freeze_reviewed_worktree(source, directory, *, freeze_parent=False):
         with os.scandir(parent) as entries:
             for entry in entries:
                 path = Path(entry.path)
-                info = entry.stat(follow_symlinks=False)
+                info = reviewed_entry_info(path, entry)
                 if stat.S_ISDIR(info.st_mode) and not is_reparse_point(info):
                     directory_count += 1
                     if directory_count > MAX_REVIEWED_DIRECTORY_COUNT:
@@ -587,7 +596,7 @@ def thaw_reviewed_worktree(source, directory, *, thaw_parent=False):
         with os.scandir(parent) as entries:
             for entry in entries:
                 path = Path(entry.path)
-                info = entry.stat(follow_symlinks=False)
+                info = reviewed_entry_info(path, entry)
                 if stat.S_ISDIR(info.st_mode) and not is_reparse_point(info):
                     directory_count += 1
                     if directory_count > MAX_REVIEWED_DIRECTORY_COUNT:

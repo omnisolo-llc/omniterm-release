@@ -353,9 +353,11 @@ class BootstrapExecutionTests(unittest.TestCase):
             executable.write_bytes(b'#!/bin/sh\nexit 0\n')
             executable.chmod(0o755)
             git('add', 'scripts/run.sh')
+            git('update-index', '--chmod=+x', 'scripts/run.sh')
             git('commit', '-qm', 'Add executable reviewed source')
             sha = git('rev-parse', 'HEAD')
             git('update-ref', 'refs/remotes/origin/reviewed', sha)
+            self.assertTrue(git('ls-tree', sha, '--', 'scripts/run.sh').startswith('100755 blob '))
             with (root / 'private.log').open('wb') as log:
                 b.verify_reviewed_worktree(source, sha, PurePosixPath('scripts'), env, log)
 
@@ -460,6 +462,16 @@ class BootstrapExecutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source, env, git, sha = self.repository(root)
+            task = source / 'scripts/task.py'
+            with os.scandir(task.parent) as entries:
+                entry = next(entries)
+                info = b.reviewed_entry_info(Path(entry.path), entry)
+            path_info = task.lstat()
+            self.assertTrue(b.stat.S_ISREG(info.st_mode))
+            self.assertEqual(info.st_nlink, 1)
+            self.assertGreater(info.st_ino, 0)
+            self.assertEqual((info.st_dev, info.st_ino),
+                             (path_info.st_dev, path_info.st_ino))
             with (root / 'private.log').open('wb') as log:
                 b.verify_reviewed_worktree(source, sha, PurePosixPath('scripts'), env, log)
                 b.freeze_reviewed_worktree(source, PurePosixPath('scripts'))
