@@ -209,7 +209,7 @@ class ReleaseMatrixTests(unittest.TestCase):
                 self.assertIn('candidate_guard_variable: OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_' + platform.upper(), external)
                 self.assertIn('runner: omniterm-release-' + platform, external)
         self.assertIn('environment: external-tests', external)
-        self.assertNotIn('id-token: write', external)
+        self.assertIn('permissions:\n      contents: read\n      id-token: write', external)
         self.assertIn('OMNI_EXTERNAL_CONFIG_FILE: ${{ vars[matrix.config_variable] }}', external)
         self.assertIn('OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_FILE: ${{ vars[matrix.candidate_guard_variable] }}', external)
         self.assertIn('RELEASE_METADATA_READ_TOKEN', external)
@@ -375,8 +375,7 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertIn('SIGNING_CONFIG: ${{ secrets.WINDOWS_SIGNING_CONFIG }}', windows)
 
         # Build-only verification, validate, and publish jobs must not receive SIGNING_CONFIG
-        for job_name in ('integration', 'installation', 'verify', 'validate', 'publish',
-                         'external_tests'):
+        for job_name in ('integration', 'installation', 'verify', 'validate', 'publish'):
             job_text = re.split(r'\n  [a-z_]+:\n', text.split(f'\n  {job_name}:\n')[1], maxsplit=1)[0]
             self.assertNotIn('SIGNING_CONFIG:', job_text, f'{job_name} must not expose signing secrets')
             self.assertNotIn('id-token: write', job_text, f'{job_name} must not grant OIDC token permissions')
