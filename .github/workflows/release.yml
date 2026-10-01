@@ -711,6 +711,7 @@ jobs:
     timeout-minutes: 180
     permissions:
       contents: read
+      id-token: write
     concurrency:
       group: ${{ matrix.platform == 'linux' && 'omniterm-mcp-candidate-staging' || format('external-tests-{0}', matrix.platform) }}
       cancel-in-progress: false
