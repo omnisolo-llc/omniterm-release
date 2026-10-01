@@ -303,7 +303,7 @@ class BootstrapExecutionTests(unittest.TestCase):
         git('config', 'core.autocrlf', 'false')
         task = source / 'scripts/task.py'
         task.parent.mkdir()
-        task.write_text("import os,sys; print('private actual child output'); sys.exit(int(os.environ.get('CHILD_EXIT_CODE','0')))\n")
+        task.write_bytes(b"import os,sys; print('private actual child output'); sys.exit(int(os.environ.get('CHILD_EXIT_CODE','0')))\n")
         git('add', '.')
         git('commit', '-qm', 'Actual reviewed source')
         sha = git('rev-parse', 'HEAD')
@@ -350,7 +350,7 @@ class BootstrapExecutionTests(unittest.TestCase):
             root = Path(directory)
             source, env, git, _ = self.repository(root)
             executable = source / 'scripts/run.sh'
-            executable.write_text('#!/bin/sh\nexit 0\n')
+            executable.write_bytes(b'#!/bin/sh\nexit 0\n')
             executable.chmod(0o755)
             git('add', 'scripts/run.sh')
             git('commit', '-qm', 'Add executable reviewed source')
@@ -383,7 +383,7 @@ class BootstrapExecutionTests(unittest.TestCase):
             root = Path(directory)
             source, env, git, sha = self.repository(root)
             task = source / 'scripts/task.py'
-            task.write_text("print('replacement source')\n")
+            task.write_bytes(b"print('replacement source')\n")
             git('add', 'scripts/task.py')
             git('commit', '-qm', 'Unapproved replacement source')
             replacement = git('rev-parse', 'HEAD')
@@ -496,7 +496,7 @@ class BootstrapExecutionTests(unittest.TestCase):
             source, env, git, _ = self.repository(root)
             release_script = source / 'scripts/release/task.py'
             release_script.parent.mkdir()
-            release_script.write_text("print('private actual child output')\n")
+            release_script.write_bytes(b"print('private actual child output')\n")
             git('add', 'scripts/release/task.py')
             git('commit', '-qm', 'Add nested reviewed entrypoint')
             sha = git('rev-parse', 'HEAD')

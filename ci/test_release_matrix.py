@@ -621,7 +621,7 @@ class ReleaseMatrixTests(unittest.TestCase):
                      'OMNI_E2E_OIDC_TENANT_ID', 'OMNI_E2E_OIDC_STORAGE_STATE'):
             self.assertNotIn(name + ':', external)
 
-        self.assertIn('needs: [resolve, publication_prepare]', external)
+        self.assertIn('needs: [resolve, publication_prepare, managed_rtc_provider]', external)
 
     def test_full_release_requires_the_self_hosted_relay_kit(self):
         base = {'build_only': False, 'ios_action': 'upload', 'source_sha': 'a' * 40,
