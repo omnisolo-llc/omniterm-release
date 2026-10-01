@@ -96,6 +96,7 @@ function finishSession(record) {
   record.relay.sessions.delete(record);
   record.owner.activeSessions.delete(record);
   try { record.connection?.close(); } catch {}
+  record.subscriberBroadcast?.close();
   if (record.token.role === 'publish' && record.relay.publisherToken === record.token.tokenId) {
     record.relay.publisherToken = null;
     record.relay.track.close();
@@ -107,7 +108,8 @@ function closeSession(record, reason) {
   if (record.closePromise) return record.closePromise;
   record.closePromise = (async () => {
     record.closeInitiated = true;
-    try { record.connection?.close(); } catch {}
+    // Stop native I/O first. Protocol disposal must not race native stream
+    // callbacks or close the same HTTP/3 session a second time.
     try { record.transport.close({closeCode: 0, reason}); } catch {}
     let timer;
     try {
@@ -191,10 +193,29 @@ export async function createMoqRelay({
   const scopeKey = (shareId, epoch) => `${shareId}\u0000${epoch}`;
   const h3 = new Http3Server({port: dataPort, host: dataHost,
     secret: randomBytes(32).toString('hex'), cert: certificate, privKey: privateKey});
+  // Select the actual WebTransport application protocol during HTTP/3
+  // admission. MoQT's later setup exchange does not negotiate this header.
+  h3.setRequestCallback(async ({header}) => {
+    const path = header[':path'];
+    const offered = header['wt-available-protocols'];
+    const token = typeof path === 'string' && /^\/[A-Za-z0-9_-]{43}$/.test(path)
+      ? tokenPaths.get(path.slice(1)) : null;
+    if (stopping || !token || !token.active || token.relay.closed ||
+        token.expiresAt <= Date.now() || token.sessions.size !== 0 ||
+        activeSessions.size >= maxSessions) return {status: 403, path: '/'};
+    // The pinned native library parses the structured header into tokens.
+    if (!Array.isArray(offered) || offered.length > 32 ||
+        !offered.every(value => typeof value === 'string' &&
+          value.length <= 128 && /^[A-Za-z0-9._-]+$/.test(value)) ||
+        !offered.includes('moqt-16')) {
+      return {status: 406, path};
+    }
+    return {status: 200, path, selectedProtocol: 'moqt-16'};
+  });
   const onSessionVisitor = h3.onHttpWTSessionVisitor.bind(h3);
   h3.onHttpWTSessionVisitor = args => {
     onSessionVisitor(args);
-    const token = tokenPaths.get(args.path);
+    const token = typeof args.path === 'string' ? tokenPaths.get(args.path.slice(1)) : null;
     const transport = args.session.jsobj;
     if (!token || !transport) return;
     const admitted = token.active && !token.relay.closed &&
@@ -407,15 +428,21 @@ export async function createMoqRelay({
         relay.publisherToken = token.tokenId;
         await forwardPublisher(record);
       } else {
-        record.connection.publish(relay.broadcastPath, relay.broadcast);
+        // The connection owns and closes its published Producer. Never hand
+        // it the room's shared Producer: one departing viewer would end it
+        // for every current and future subscriber. Only the track is shared.
+        record.subscriberBroadcast = new Moq.Broadcast.Producer();
+        record.subscriberBroadcast.insertTrack(relay.track);
+        record.connection.publish(relay.broadcastPath, record.subscriberBroadcast);
         await record.finished;
       }
     } catch {
       await closeSession(record, 'MoQ session failed');
     } finally {
-      if (record.transport.closed) record.transportClosed = true;
+      // `closed` is a Promise, not evidence that native closure occurred.
+      // Only its settlement retires the authoritative active-session record.
+      if (!record.transportClosed) await closeSession(record, 'protocol_finished');
       finishSession(record);
-      activeSessions.delete(record);
     }
   }
 
@@ -424,6 +451,14 @@ export async function createMoqRelay({
     const record = {owner: {activeSessions}, token, relay: token.relay, transport,
       connection: null, closed: false, admitted,
       finished: new Promise(resolve => { resolveFinished = resolve; }), resolveFinished};
+    // Guard only this owned transport instance; never patch global APIs.
+    const nativeClose = transport.close.bind(transport);
+    let closeRequested = false;
+    transport.close = (...args) => {
+      if (closeRequested || record.transportClosed) return;
+      closeRequested = true;
+      return nativeClose(...args);
+    };
     token.sessions.add(record);
     token.relay.sessions.add(record);
     activeSessions.add(record);
@@ -489,8 +524,14 @@ export async function createMoqRelay({
       const results = await Promise.all([...relays.values()].map(relay => closeRelay(relay, 'service_shutdown')));
       await new Promise(resolve => listener.close(resolve));
       h3.stopServer();
-      await Promise.race([h3.closed.catch(() => {}), new Promise(resolve => setTimeout(resolve, 5000))]);
-      return results.every(Boolean);
+      let timer;
+      try {
+        const stopped = await Promise.race([
+          h3.closed.then(() => true, () => false),
+          new Promise(resolve => { timer = setTimeout(() => resolve(false), CLOSE_TIMEOUT_MS); }),
+        ]);
+        return stopped && results.every(Boolean);
+      } finally { clearTimeout(timer); }
     })();
     return closePromise;
   }
