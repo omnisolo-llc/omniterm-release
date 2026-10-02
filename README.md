@@ -37,7 +37,7 @@ under **Assets** as a GitHub fallback.
 | Native services | `omniterm-<version>-services-{linux-x64,windows-x64,macos-arm64}` archives |
 | Linux agent | `omniterm-<version>-agent-linux-amd64.deb` and `omniterm-<version>-agent-linux-x86_64.rpm` |
 | Browser | `omniterm-<version>-flutter-web.tar.gz` and `omniterm-<version>-workstation-web.tar.gz` |
-| iPhone and iPad | Signed device build delivered privately to App Store Connect; no public IPA |
+| iPhone and iPad | Signed IPA in the complete private source release; private App Store Connect delivery remains separate |
 
 The release inventory contains **15 downloadable application packages**, plus
 checksums and the required self-hosted relay kit containing the Cloudflare,
@@ -149,7 +149,28 @@ a draft, verifies downloaded bytes and SHA-256 checksums, and requires a matchin
 Apple delivery receipt before publication. Missing, stale, wrong-platform, or
 unexpected artifacts prevent publication. All jobs use one source revision resolved
 before validation and builds begin.
-Private build and delivery receipts are removed before the release becomes public.
+Receipts never enter public release drafts. Validation, build, and Apple receipts
+stay in immutable private object storage throughout staging. Public promotion
+first preserves the complete verified release in the private source repository.
+
+### Release destinations and mobile assets
+
+Only explicitly public packages and their public integrity metadata are attached
+to [this public release page](https://github.com/omnisolo-llc/omniterm-release/releases).
+Public APKs include universal and architecture-specific Android downloads; the
+Android AAB is also a public application artifact.
+
+For authorized maintainers, the [complete private release](https://github.com/ql-owo-lp/omniterm/releases)
+contains the same public downloads plus the private Apple build and sanitized
+receipts, build diagnostics, and symbols. The signed IPA is attached there as
+`omniterm-<version>-ios-private.ipa`, with a SHA-256 sidecar. An IPA file is not a
+claim of App Store approval or unrestricted installation. Signing keys, provider
+credentials, and raw authentication/configuration files go to neither release.
+
+The publisher requires the protected `PRIVATE_RELEASE_TOKEN` for the private
+archive. A missing token, wrong repository visibility, incomplete package set,
+or mismatched source/run/hash stops publication; there is no public fallback
+for private artifacts.
 
 Full releases first run genuine application integration on six protected native
 and browser runners. Validation acquires all six artifacts from private storage
@@ -322,14 +343,34 @@ The public relay and launcher source use the [GPL-3.0 license](LICENSE).
 Separately distributed application binaries retain their own license.
 # Omni Agent Native Builds
 
-The `Omni Agent Native Release` manual workflow builds the standalone agent on
-native Linux and macOS runners for x64 and ARM64. Its exact source revision and
-version are pinned in `ci/approved_agent_source.json`. It uses the existing
-protected `downloads` environment and read-only source deploy key. Private
+The `Omni Agent Native Release` manual workflow has six native builds: Linux,
+macOS, and Windows, each for x86-64 and ARM64. Its exact source revision and
+version are pinned in `ci/approved_agent_source.json`; the approved source must
+contain the current native packaging entrypoint. It uses the protected
+`downloads` environment and read-only source deploy key.
+
+| Standalone agent | Architectures | Required download containers |
+| --- | --- | --- |
+| Linux | x86-64, ARM64 | ZIP, tar.gz, DEB, RPM |
+| macOS | Intel x86-64, Apple Silicon ARM64 | ZIP, tar.gz, PKG, DMG |
+| Windows | x86-64, ARM64 | portable EXE and ZIP, MSI, setup EXE |
+
+Names include their actual container suffix, for example
+`omniterm-agent-v<version>-darwin-aarch64.pkg`,
+`omniterm-agent-v<version>-darwin-aarch64.dmg`,
+`omniterm-agent-v<version>-windows-x86_64.msi`, and
+`omniterm-agent-v<version>-windows-aarch64-setup.exe`.
+Legacy raw Unix executable names remain for installer compatibility; a raw
+binary is never relabeled as an installer. APK/IPA downloads are application
+packages, not standalone agent packages.
+
+Each build retains the exact platform package manifest and hashes. Private
 source and compiler output are removed after the task; diagnostics are encrypted
-for `OMNI_AGENT_DIAGNOSTICS_PUBLIC_KEY`. Only the four actual compiled binaries
-are uploaded as distributable artifacts. Signing and download promotion require
-the agent lifecycle gates and the production release authority.
+for `OMNI_AGENT_DIAGNOSTICS_PUBLIC_KEY`. Build artifacts are not automatically
+published release downloads. Signing and promotion require the agent lifecycle
+gates and production release authority. The source publication job retains the
+complete signed agent release in the private source repository. Existing v0.1.0
+assets are not replaced with newer source under the old version.
 
 After all six candidate builds, protected `installation` jobs execute the actual
 produced packages on the corresponding dedicated platform runners. Configure
