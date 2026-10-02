@@ -526,11 +526,13 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertIn('id-token: write', windows)
         self.assertIn('SIGNING_CONFIG: ${{ secrets.WINDOWS_SIGNING_CONFIG }}', windows)
 
-        # Build-only verification, validate, and publish jobs must not receive SIGNING_CONFIG
-        for job_name in ('integration', 'installation', 'verify', 'validate', 'publish', 'vpn_container', 'managed_rtc_provider'):
+        # Build-only and publication jobs do not need OIDC; evidence producers do.
+        for job_name in ('integration', 'installation', 'verify', 'validate', 'publish',
+                         'vpn_container', 'managed_rtc_provider', 'external_tests'):
             job_text = re.split(r'\n  [a-z_]+:\n', text.split(f'\n  {job_name}:\n')[1], maxsplit=1)[0]
             self.assertNotIn('SIGNING_CONFIG:', job_text, f'{job_name} must not expose signing secrets')
-            if job_name not in ('installation', 'vpn_container', 'managed_rtc_provider'):
+            if job_name not in ('installation', 'vpn_container', 'managed_rtc_provider',
+                                'external_tests'):
                 self.assertNotIn('id-token: write', job_text, f'{job_name} must not grant OIDC token permissions')
 
         installation = text.split('\n  installation:\n')[1].split('\n  ios_delivery:\n')[0]
@@ -655,3 +657,26 @@ class ReleaseMatrixTests(unittest.TestCase):
                         'npm test --prefix relay/moq'):
             with self.subTest(command=command):
                 self.assertIn(command, validate)
+
+    def test_moq_native_cutoff_patch_is_pinned_and_rebuilt_on_install(self):
+        moq_root = ROOT / 'relay/moq'
+        package = json.loads((moq_root / 'package.json').read_text())
+        self.assertEqual(package['scripts']['postinstall'],
+                         'node scripts/build-patched-webtransport.mjs')
+
+        builder = (moq_root / 'scripts/build-patched-webtransport.mjs').read_text()
+        self.assertIn('212ef743f0cf52adb234d60d5b41c48257e967b4', builder)
+        self.assertIn('80bf9559d3a4c08dde4b85abc46d190a88ffef64', builder)
+        self.assertIn('binary_sha256', builder)
+        self.assertIn("npm_config_build_from_source: 'true'", builder)
+        self.assertIn("'build.js', 'install'", builder)
+        patch = (moq_root / 'patches/quiche-server-close-ack.patch').read_text()
+        self.assertEqual(patch.count('+    MaybeNotifyClose();'), 2)
+
+        contracts = (ROOT / '.github/workflows/contracts.yml').read_text()
+        moq_job = contracts.split('\n  first-party-moq:\n', 1)[1].split(
+            '\n  native-relay-contract:\n', 1)[0]
+        self.assertIn('build-essential cmake libicu-dev', moq_job)
+        release = (ROOT / '.github/workflows/release.yml').read_text()
+        validate = release.split('\n  validate:\n', 1)[1].split('\n  downloads:\n', 1)[0]
+        self.assertIn('build-essential cmake libicu-dev', validate)

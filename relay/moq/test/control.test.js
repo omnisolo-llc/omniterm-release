@@ -154,7 +154,7 @@ test('viewer close is token-scoped and owner close acknowledges the exact remain
   assert.deepEqual(retried.value.closedTokenIds, [host.value.tokenId]);
 });
 
-test('HTTP/3 requires MoQT negotiation and never acknowledges unconfirmed owner cutoff', async t => {
+test('HTTP/3 owner cutoff closes the native session and rejects token replay', async t => {
   const {origin, certificate, service} = await fixture(t);
   const created = await controlRequest(origin, certificate, '/v1/relays', {
     body: {shareId: 'MoqH3Ow1', epoch: 'h3-owner-epoch-0001', expiresAt: Date.now() + 60000},
@@ -204,13 +204,25 @@ test('HTTP/3 requires MoQT negotiation and never acknowledges unconfirmed owner 
   const ownerClosed = await controlRequest(origin, certificate, '/v1/rooms/close', {
     body: {shareId: 'MoqH3Ow1', epoch: 'h3-owner-epoch-0001'},
   });
-  // The pinned Node adapter receives this close but does not complete the
-  // server-side native `closed` observation; sending CLOSE is not proof of ack.
-  assert.equal(ownerClosed.status, 503);
-  assert.equal(ownerClosed.value.error, 'active_session_close_unconfirmed');
-  assert.deepEqual(ownerClosed.value.closedTokenIds, []);
+  assert.equal(ownerClosed.status, 200);
+  assert.deepEqual(ownerClosed.value.closedTokenIds, [secondToken.value.tokenId]);
   await second.closed;
-  assert.equal(service.activeSessionCount, 1);
+  assert.equal(service.activeSessionCount, 0);
+
+  const replay = new WebTransport(urlFor(secondToken.value.secret), clientOptions);
+  replay.closed.catch(() => {});
+  const replayDenied = await Promise.race([
+    replay.ready.then(() => false, () => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 5000)),
+  ]);
+  assert.equal(replayDenied, true);
+  replay.close();
+
+  const cutoffRetry = await controlRequest(origin, certificate, '/v1/rooms/close', {
+    body: {shareId: 'MoqH3Ow1', epoch: 'h3-owner-epoch-0001'},
+  });
+  assert.equal(cutoffRetry.status, 200);
+  assert.deepEqual(cutoffRetry.value.closedTokenIds, [secondToken.value.tokenId]);
 });
 
 test('managed MoQ readiness requires an authenticated Worker usage authority callback',async t=>{

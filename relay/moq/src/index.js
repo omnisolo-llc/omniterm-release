@@ -142,9 +142,11 @@ function closeSession(record, reason) {
   if (record.closePromise) return record.closePromise;
   record.closePromise = (async () => {
     record.closeInitiated = true;
-    // Stop native I/O first. Protocol disposal must not race native stream
-    // callbacks or close the same HTTP/3 session a second time.
-    try { record.transport.close({closeCode: 0, reason}); } catch {}
+    record.closeReason = reason;
+    try { record.connection?.close(); } catch {}
+    if (!record.closeRequested && !record.transportClosed) {
+      try { record.transport.close({closeCode: 0, reason}); } catch {}
+    }
     let timer;
     try {
       return await Promise.race([
@@ -594,10 +596,12 @@ export async function createMoqRelay({
       finished: new Promise(resolve => { resolveFinished = resolve; }), resolveFinished};
     // Guard only this owned transport instance; never patch global APIs.
     const nativeClose = transport.close.bind(transport);
-    let closeRequested = false;
     transport.close = (...args) => {
-      if (closeRequested || record.transportClosed) return;
-      closeRequested = true;
+      if (record.closeRequested || record.transportClosed) return;
+      record.closeRequested = true;
+      if (args.length === 0) {
+        return nativeClose({closeCode: 0, reason: record.closeReason ?? ''});
+      }
       return nativeClose(...args);
     };
     token.sessions.add(record);
