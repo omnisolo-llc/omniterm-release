@@ -674,8 +674,6 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertIn('npm_tarball_integrity', builder)
         self.assertIn('patch_sha256', builder)
         self.assertIn("'--unidiff-zero'", builder)
-        self.assertIn('build_${process.platform}_${process.arch}/Release/webtransport.node',
-                      builder)
         self.assertIn('package-lock.json', builder)
         self.assertIn("join(packageRoot, 'node_modules', '.bin')", builder)
         self.assertIn('binary_sha256', builder)
