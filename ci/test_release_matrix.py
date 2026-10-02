@@ -669,7 +669,12 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertIn('80bf9559d3a4c08dde4b85abc46d190a88ffef64', builder)
         self.assertIn('binary_sha256', builder)
         self.assertIn("npm_config_build_from_source: 'true'", builder)
-        self.assertIn("'build.js', 'install'", builder)
+        self.assertNotIn("'build.js', 'install'", builder)
+        self.assertIn('cmake-js/bin/cmake-js', builder)
+        self.assertIn('nativeBuildPath(adapterRoot)', builder)
+        self.assertIn('requireLoadedAddon', builder)
+        self.assertIn('webtransport-client-close.patch', builder)
+        self.assertIn('client_sha256=', builder)
         patch = (moq_root / 'patches/quiche-server-close-ack.patch').read_text()
         self.assertEqual(patch.count('+    MaybeNotifyClose();'), 2)
 

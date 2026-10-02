@@ -359,11 +359,12 @@ export async function createMoqRelay({
     }
     try {
       if (request.method === 'GET' && url.pathname === '/v1/readyz') {
-        if (!await verifyWorkerUsageAuthority()) {
+        const meteringReady = usage ? await verifyWorkerUsageAuthority() : false;
+        if ((usage || managedUsageRequired) && !meteringReady) {
           return json(response, {error: 'worker_usage_authority_unavailable'}, 503);
         }
         return json(response, {status: 'ready', protocol: 'omniterm-moq-v1',
-          worker_usage_metering: true, active_session_cutoff: true});
+          worker_usage_metering: meteringReady, active_session_cutoff: true});
       }
       if (request.method === 'POST' && url.pathname === '/v1/relays') {
         const body = await readJson(request);
