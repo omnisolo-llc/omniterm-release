@@ -94,3 +94,19 @@ must reauthorize before reconnect. Provider availability, CPU, bandwidth,
 connection cost and sustained-load budgets require deployment-specific
 measurement. Token URL paths, `Authorization`, and control request bodies must
 be redacted from proxy/access logs.
+
+### Native build identity and confirmed shutdown
+
+The install hook builds the pinned Quiche source rather than accepting an
+upstream prebuilt addon. Its receipt binds both patch files, the platform/CPU,
+the actual `build_<platform>_<arch>/Release/webtransport.node` loaded by Node,
+and the patched client socket source. A stale CMake path is rebuilt locally.
+`node scripts/build-patched-webtransport.mjs --verify-only` checks this receipt
+without downloads or compilation and fails on an absent or different addon.
+
+Client teardown waits until the native receive callback has unwound before
+releasing the socket. This preserves the peer FIN/close acknowledgement; it
+neither invents server closure nor lengthens the five-second cutoff deadline.
+Self-hosted readiness reports `worker_usage_metering: false` when no account
+meter is configured. Configured or required managed metering still fails closed
+when its authenticated Worker readiness call fails.

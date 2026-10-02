@@ -263,3 +263,12 @@ test('managed MoQ cannot start without its separately authenticated Worker usage
   await assert.rejects(createMoqRelay({controlToken,managedUsageRequired:true}),
     /managed_worker_usage_required/);
 });
+
+test('self-hosted readiness is honest without a managed Worker account', async t => {
+  const {origin,certificate} = await fixture(t);
+  const response = await controlGet(origin,certificate,'/v1/readyz');
+  assert.equal(response.status,200);
+  assert.deepEqual(response.value,{status:'ready',protocol:'omniterm-moq-v1',
+    worker_usage_metering:false,active_session_cutoff:true});
+  assert.equal((await controlGet(origin,certificate,'/v1/readyz','')).status,401);
+});

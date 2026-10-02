@@ -4,6 +4,7 @@ import {cp, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {dirname, join, resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {fileURLToPath} from 'node:url';
+import {nativeBuildPath, requireLoadedAddon} from './native-build-identity.mjs';
 
 const adapterCommit = '212ef743f0cf52adb234d60d5b41c48257e967b4';
 const quicheCommit = '80bf9559d3a4c08dde4b85abc46d190a88ffef64';
@@ -24,6 +25,7 @@ function run(command, args, options = {}) {
     encoding: options.capture ? 'utf8' : undefined,
     stdio: options.capture ? 'pipe' : 'inherit',
     maxBuffer: 16 * 1024 * 1024,
+    timeout: 1800000,
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -43,20 +45,37 @@ async function main() {
 
   const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const patchFile = join(packageRoot, 'patches', 'quiche-server-close-ack.patch');
-  const markerPrefix = `omniterm-quiche-close-ack-v1\nwebtransport=${adapterCommit}\nquiche=${quicheCommit}\n`;
+  const clientPatchFile = join(packageRoot, 'patches', 'webtransport-client-close.patch');
+  const patchDigest = createHash('sha256').update(await readFile(patchFile))
+    .update(await readFile(clientPatchFile)).digest('hex');
+  const markerPrefix = `omniterm-quiche-close-ack-v2\nwebtransport=${adapterCommit}\nquiche=${quicheCommit}\npatch_sha256=${patchDigest}\nplatform=${process.platform}_${process.arch}\n`;
   const thirdPartyRoot = join(adapterRoot, 'third_party');
   const markerPath = join(thirdPartyRoot, '.omniterm-quiche-close-ack');
-  const nativeBinary = join(adapterRoot, 'build', 'Release', 'webtransport.node');
+  const nativeBinary = nativeBuildPath(adapterRoot);
+  const clientSocket = join(adapterRoot, 'lib', 'clientsocket.js');
+  const inspectLoaded = () => {
+    const output = run(process.execPath, ['--input-type=module', '-e',
+      "import {createRequire} from 'node:module';await import('@fails-components/webtransport-transport-http3-quiche');console.log('LOADED '+JSON.stringify(Object.keys(createRequire(import.meta.url).cache).filter(p=>p.endsWith('webtransport.node'))));"],
+      {cwd: packageRoot, capture: true});
+    const line = output.split('\n').find(line => line.startsWith('LOADED '));
+    requireLoadedAddon(nativeBinary, JSON.parse(line?.slice(7) ?? 'null'));
+  };
 
   try {
     const marker = await readFile(markerPath, 'utf8');
     const binary = await readFile(nativeBinary);
     const binaryDigest = createHash('sha256').update(binary).digest('hex');
-    if (marker === `${markerPrefix}binary_sha256=${binaryDigest}\n`) {
+    const clientDigest = createHash('sha256').update(await readFile(clientSocket)).digest('hex');
+    if (marker === `${markerPrefix}binary_sha256=${binaryDigest}\nclient_sha256=${clientDigest}\n`) {
+      inspectLoaded();
       process.stdout.write('Verified patched WebTransport native adapter\n');
       return;
     }
   } catch {}
+
+  if (process.argv.includes('--verify-only')) {
+    throw Error('Patched native addon is absent or stale; run make moq-setup');
+  }
 
   const tempRoot = await mkdtemp(join(tmpdir(), 'omniterm-webtransport-source-'));
   const sourceRoot = join(tempRoot, 'webtransport');
@@ -90,6 +109,9 @@ async function main() {
 
     run('git', ['-C', quicheRoot, 'apply', '--check', patchFile]);
     run('git', ['-C', quicheRoot, 'apply', patchFile]);
+    run('git', ['-C', sourceRoot, 'apply', '--check', clientPatchFile]);
+    run('git', ['-C', sourceRoot, 'apply', clientPatchFile]);
+    await cp(join(sourceRoot, 'transports/http3-quiche/lib/clientsocket.js'), clientSocket);
 
     await rm(thirdPartyRoot, {recursive: true, force: true});
     await cp(join(sourceRoot, 'transports/http3-quiche/third_party'), thirdPartyRoot,
@@ -100,10 +122,24 @@ async function main() {
       CMAKE_BUILD_PARALLEL_LEVEL: process.env.CMAKE_BUILD_PARALLEL_LEVEL ?? '2',
       npm_config_build_from_source: 'true',
     };
-    run(process.execPath, ['build.js', 'install'], {cwd: adapterRoot, env: buildEnv});
+    // Never call upstream `install`: it may accept an unpatched prebuilt addon.
+    const buildDirectory = dirname(dirname(nativeBinary));
+    try {
+      const cache = await readFile(join(buildDirectory, 'CMakeCache.txt'), 'utf8');
+      if (!cache.includes(`CMAKE_HOME_DIRECTORY:INTERNAL=${adapterRoot}\n`)) {
+        await rm(buildDirectory, {recursive: true, force: true});
+      }
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    // Debug selection would shadow the certified Release build in development.
+    await rm(join(buildDirectory, 'Debug'), {recursive: true, force: true});
+    const cmake = fileURLToPath(import.meta.resolve('cmake-js/bin/cmake-js'));
+    run(process.execPath, [cmake, 'build', '--CDnapi_build_version=6', '-O', buildDirectory],
+      {cwd: adapterRoot, env: buildEnv});
+    inspectLoaded();
     const builtBinary = await readFile(nativeBinary);
     const binaryDigest = createHash('sha256').update(builtBinary).digest('hex');
-    await writeFile(markerPath, `${markerPrefix}binary_sha256=${binaryDigest}\n`,
+    const clientDigest = createHash('sha256').update(await readFile(clientSocket)).digest('hex');
+    await writeFile(markerPath, `${markerPrefix}binary_sha256=${binaryDigest}\nclient_sha256=${clientDigest}\n`,
       {mode: 0o644});
     process.stdout.write('Built WebTransport with peer-confirmed server session closure\n');
   } finally {
