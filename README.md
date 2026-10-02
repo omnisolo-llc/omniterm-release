@@ -55,13 +55,20 @@ never publishes files, and an unsigned verification APK is not a release downloa
 ## For maintainers
 
 Run **Actions → Release → Run workflow** on `main`. Build-only runs may leave
-the source SHA blank to inspect the latest private branch tip. Before a full
-release, review the exact private source commit and approve its SHA through a
-reviewed change to `ci/approved_release_source.json` on this protected branch.
-Enter that same full SHA in the workflow; a blank, different, or unresolved
-approval blocks publication. Every job uses the same resolved commit. The version
-defaults to `0.1.0`. Platform job names include a UTC workflow identifier in
-`yyyymmddHHmm` format. Supply a fresh shared app build number from `1` to `9999`.
+the source SHA blank to inspect the latest private branch tip. Full releases
+require the protected `release-source-approval` environment. Configure required
+reviewers and restrict its deployment branch to `main`. After the source `main`
+and public-builder `main` have both been reviewed and frozen, set the environment
+variables `APPROVED_RELEASE_SOURCE_SHA` and `APPROVED_RELEASE_BUILDER_SHA` to
+their exact 40-character lowercase commit SHAs. Do not populate these values before both
+main branches are frozen. The source SHA must match the workflow input; the
+builder SHA must match the current workflow commit. Missing, malformed, zero,
+foreign, or stale pins block resolution. Any change to either candidate requires
+reviewing and updating both environment pins before another full release.
+Enter the approved source SHA in the full-release workflow input. Every later
+job uses that same resolved commit. The version defaults to `0.1.0`. Platform
+job names include a UTC workflow identifier in `yyyymmddHHmm` format. Supply a
+fresh shared app build number from `1` to `9999`.
 Configure the source secrets for `ql-owo-lp/omniterm`, branch `main`, and
 `scripts/release/entrypoint.py`; the launcher rejects a different source identity.
 Configure repository variable `OMNITERM_VPN_PROVIDER_PUBLIC_KEY` as the canonical
@@ -106,9 +113,15 @@ source task builds the client fixture locally from the exact candidate Linux
 package and binds its image ID, base-image digest, helper, installer, native
 library, build context, and four service-image digests into private run evidence;
 no registry push is used for that candidate image.
+The owner-only scenario profile uses schema 2: its dual-stack `gateway_lan`
+addresses place a behind-NAT gateway behind a dedicated stateful router, while
+`egress.system_dns_ipv4` and `egress.system_dns_ipv6` identify the preserved OS
+resolver fixture separately from the managed resolver. The pinned DNS image
+serves both isolated resolver endpoints.
 Each Linux runner must have Docker and `/dev/net/tun`, with `/sys/module/wireguard`
-matching its assigned state. Each executes 16 route cells plus cutoff cases;
-together they produce the required 32-cell container matrix. Missing profiles,
+matching its assigned state. Each executes 32 route rows, 49 cutoff scenarios,
+and 8 adversarial scenarios; both runners produce the 64-cell connectivity matrix
+across kernel-module states and 178 total evidence results. Missing profiles,
 runners, or same-run route receipts block iOS delivery and publication.
 Protected release tasks require an isolated runner that accepts one job at a time
 and is not shared with untrusted jobs. The launcher verifies and marks its import

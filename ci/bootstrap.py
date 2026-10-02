@@ -687,16 +687,24 @@ def select_source_sha(requested, branch_tip):
     return requested or branch_tip
 
 
-def approved_release_sha(path=None):
-    approval = Path(path) if path is not None else Path(__file__).with_name('approved_release_source.json')
-    if approval.is_symlink() or not approval.is_file() or approval.stat().st_size > 128:
-        raise ValueError('A reviewed release source is required')
-    value = json.loads(approval.read_text(encoding='ascii'))
-    if (not isinstance(value, dict) or set(value) != {'source_sha'}
-            or not isinstance(value['source_sha'], str)
-            or not re.fullmatch(r'[0-9a-f]{40}', value['source_sha'])):
-        raise ValueError('A reviewed release source is required')
-    return value['source_sha']
+def release_commit_sha(value):
+    if (not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{40}', value)
+            or int(value, 16) == 0):
+        raise ValueError('A protected release source approval is missing or invalid')
+    return value
+
+
+def validate_release_source_approval(env, requested_source_sha, requested_builder_sha):
+    source_sha = release_commit_sha(env.get('APPROVED_RELEASE_SOURCE_SHA', ''))
+    builder_sha = release_commit_sha(env.get('APPROVED_RELEASE_BUILDER_SHA', ''))
+    workflow_sha = release_commit_sha(env.get('GITHUB_SHA', ''))
+    requested_builder_sha = release_commit_sha(requested_builder_sha)
+    if (not isinstance(requested_source_sha, str)
+            or requested_source_sha.lower() != source_sha):
+        raise ValueError('The full release source differs from protected approval')
+    if builder_sha != requested_builder_sha or builder_sha != workflow_sha:
+        raise ValueError('The current builder revision differs from protected approval')
+    return {'source_sha': source_sha, 'builder_sha': builder_sha}
 
 
 def workflow_identifier(now=None):
@@ -704,7 +712,8 @@ def workflow_identifier(now=None):
     return timestamp.astimezone(timezone.utc).strftime('%Y%m%d%H%M')
 
 
-def task_request(raw, *, resolved=None, allow_missing_source_sha=False):
+def task_request(raw, *, resolved=None, allow_missing_source_sha=False,
+                 approved_source_sha=None, approved_builder_sha=None):
     request = json.loads(raw)
     if not isinstance(request, dict):
         raise ValueError('Expected request object')
@@ -713,9 +722,11 @@ def task_request(raw, *, resolved=None, allow_missing_source_sha=False):
         raise ValueError('Invalid verification target')
     windows_preview = request.pop('preview_windows_self_sign', False)
     allowed_fields = {'source_sha', 'version', 'build_number', 'ios_action',
-                      'automatic_release', 'include_selfhost', 'build_only'}
+                      'automatic_release', 'include_selfhost', 'build_only',
+                      'builder_sha'}
     if set(request) - allowed_fields:
         raise ValueError('Unexpected release request field')
+    requested_builder_sha = request.pop('builder_sha', '')
     request.setdefault('source_sha', '')
     request.setdefault('version', '0.1.0')
     request.setdefault('ios_action', 'skip')
@@ -752,9 +763,20 @@ def task_request(raw, *, resolved=None, allow_missing_source_sha=False):
     requested_sha = request.get('source_sha', '')
     approved_sha = None
     if not build_only:
-        approved_sha = approved_release_sha()
+        if approved_source_sha is not None:
+            approved_sha = release_commit_sha(approved_source_sha)
+        elif isinstance(resolved, dict):
+            approved_sha = release_commit_sha(resolved.get('source_sha', ''))
+        else:
+            raise ValueError('A protected release source approval is required')
         if not isinstance(requested_sha, str) or requested_sha.lower() != approved_sha:
-            raise ValueError('The full release source has not been reviewed')
+            raise ValueError('The full release source differs from protected approval')
+        if approved_builder_sha is None and isinstance(resolved, dict):
+            approved_builder_sha = resolved.get('builder_sha')
+        approved_builder_sha = release_commit_sha(approved_builder_sha)
+        if (not isinstance(requested_builder_sha, str)
+                or requested_builder_sha != approved_builder_sha):
+            raise ValueError('The full release builder differs from protected approval')
 
     if resolved:
         for key in ('source_sha', 'version', 'build_number'):
@@ -858,9 +880,23 @@ def main():
         raw_request = required(env, 'RELEASE_REQUEST')
         request = json.loads(raw_request)
         validate_target_request(target, request)
+        approval = None
+        approved_builder_sha = None
+        if request.get('build_only') is not True:
+            requested_builder_sha = release_commit_sha(request.get('builder_sha', ''))
+            workflow_sha = release_commit_sha(env.get('GITHUB_SHA', ''))
+            if requested_builder_sha != workflow_sha:
+                raise ValueError('The current builder revision differs from the source gitlink')
+            approved_builder_sha = requested_builder_sha
+        if target == 'resolve' and request.get('build_only') is not True:
+            approval = validate_release_source_approval(
+                env, request.get('source_sha', ''), requested_builder_sha)
         env['RELEASE_REQUEST'] = task_request(
             raw_request, resolved=resolved,
-            allow_missing_source_sha=(target == 'resolve'))
+            allow_missing_source_sha=(target == 'resolve'),
+            approved_source_sha=approval['source_sha'] if approval else None,
+            approved_builder_sha=(approval['builder_sha'] if approval
+                                  else approved_builder_sha))
         repo, branch, entry, sha = validate(env)
         validate_integration_authority(env, repo, branch)
     except Exception:

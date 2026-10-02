@@ -237,11 +237,11 @@ class IntegrationHandoffTests(unittest.TestCase):
                     'SOURCE_KNOWN_HOSTS': 'synthetic',
                     'BUILD_CONFIG': '{"OMNI_ENABLE_VPN":"true"}',
                     'STORAGE_CONFIG': '{}',
+                    'RESOLVED_SOURCE_SHA': source_sha,
                     'RUNNER_TEMP': '/tmp',
                 }
                 output = io.StringIO()
                 with mock.patch.dict(os.environ, env, clear=True), \
-                        mock.patch.object(bootstrap, 'approved_release_sha', return_value=source_sha), \
                         mock.patch.object(bootstrap.tempfile, 'TemporaryDirectory',
                                           side_effect=AssertionError('checkout boundary was reached')), \
                         contextlib.redirect_stdout(output):

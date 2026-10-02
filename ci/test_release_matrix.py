@@ -277,9 +277,11 @@ class ReleaseMatrixTests(unittest.TestCase):
         key = 'OMNITERM_VPN_PROVIDER_PUBLIC_KEY'
         expected = '${{ vars.' + key + ' }}'
         self.assertNotIn(key, workflow.split('\njobs:\n', 1)[0])
+        self.assertNotIn(key, jobs['release_source_approval'])
+        self.assertNotIn('RELEASE_TARGET:', jobs['release_source_approval'])
         self.assertNotIn(key, jobs['resolve'])
         for name, job in jobs.items():
-            if name == 'resolve':
+            if name in ('release_source_approval', 'resolve'):
                 continue
             with self.subTest(job=name):
                 targets = re.findall(r'^\s+RELEASE_TARGET: .+$', job, re.MULTILINE)
@@ -295,6 +297,7 @@ class ReleaseMatrixTests(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/release.yml').read_text()
         jobs = workflow_jobs(workflow)
         expected = {
+            'release_source_approval': {'contents': 'read'},
             'resolve': {'contents': 'read'},
             'integration': {'contents': 'read'},
             'verify': {'contents': 'read'},
@@ -327,7 +330,7 @@ class ReleaseMatrixTests(unittest.TestCase):
 
     def test_private_source_jobs_are_limited_to_the_canonical_builder(self):
         text = (ROOT / '.github/workflows/release.yml').read_text()
-        names = ('resolve', 'integration', 'verify', 'validate', 'downloads', 'ios',
+        names = ('release_source_approval', 'resolve', 'integration', 'verify', 'validate', 'downloads', 'ios',
                  'package_signatures', 'apple_testflight', 'installation', 'ios_delivery',
                  'vpn_container', 'managed_rtc_provider', 'windows_download', 'publication_prepare',
                  'external_tests', 'external_windows_signing',
@@ -419,6 +422,9 @@ class ReleaseMatrixTests(unittest.TestCase):
         source_input = text.split('      source_sha:\n', 1)[1].split('      version:\n', 1)[0]
         self.assertIn('required: false', source_input)
         self.assertIn("default: ''", source_input)
+        builder_input = text.split('      builder_sha:\n', 1)[1].split('      version:\n', 1)[0]
+        self.assertIn('required: false', builder_input)
+        self.assertIn("default: ''", builder_input)
         self.assertIn("default: '0.1.0'", text)
         build_input = text.split('      build_number:\n', 1)[1].split('      ios_action:\n', 1)[0]
         self.assertIn('required: true', build_input)
@@ -436,6 +442,37 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertIn("needs.external_tests.result == 'success'", publish)
         self.assertIn("needs.external_windows_signing.result == 'success'", publish)
         self.assertIn('needs.resolve.result == \'success\'', publish)
+
+    def test_full_release_source_approval_is_protected_and_builder_pinned(self):
+        workflow = (ROOT / '.github/workflows/release.yml').read_text()
+        jobs = workflow_jobs(workflow)
+        approval = jobs['release_source_approval']
+        resolve = jobs['resolve']
+
+        self.assertIn('environment: release-source-approval', approval)
+        self.assertIn('!inputs.build_only', approval)
+        self.assertIn('vars.APPROVED_RELEASE_SOURCE_SHA', approval)
+        self.assertIn('vars.APPROVED_RELEASE_BUILDER_SHA', approval)
+        self.assertIn('GITHUB_SHA: ${{ github.sha }}', approval)
+        self.assertIn('REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}', approval)
+        self.assertIn('REQUESTED_BUILDER_SHA: ${{ inputs.builder_sha }}', approval)
+        self.assertIn('ci/validate_release_source_approval.py', approval)
+        self.assertNotIn('SOURCE_DEPLOY_KEY:', approval)
+        self.assertNotIn('STORAGE_CONFIG:', approval)
+
+        self.assertIn('needs: [release_source_approval]', resolve)
+        self.assertIn('!cancelled()', resolve)
+        self.assertIn('needs.release_source_approval.result == \'success\'', resolve)
+        self.assertIn('APPROVED_RELEASE_SOURCE_SHA: ${{ needs.release_source_approval.outputs.source_sha }}', resolve)
+        self.assertIn('APPROVED_RELEASE_BUILDER_SHA: ${{ needs.release_source_approval.outputs.builder_sha }}', resolve)
+
+        self.assertNotIn('approved_release_source.json', workflow)
+        self.assertNotIn('approved_release_source.json', (ROOT / 'ci/bootstrap.py').read_text())
+        self.assertFalse((ROOT / 'ci/approved_release_source.json').exists())
+        readme = (ROOT / 'README.md').read_text()
+        self.assertIn('release-source-approval', readme)
+        self.assertIn('APPROVED_RELEASE_SOURCE_SHA', readme)
+        self.assertIn('APPROVED_RELEASE_BUILDER_SHA', readme)
 
     def test_download_jobs_cover_every_public_distribution_group(self):
         workflow = (ROOT / '.github/workflows/release.yml').read_text()
@@ -461,10 +498,11 @@ class ReleaseMatrixTests(unittest.TestCase):
                                                             'source_sha': 'a' * 40,
                                                             'version': '0.1.0', 'build_number': '1'}))
         for action in ('upload', 'submit'):
-            with bootstrap_tests.approved_launcher() as reviewed:
-                reviewed.task_request(json.dumps({'build_only': False, 'ios_action': action,
-                                                            'source_sha': 'a' * 40,
-                                                            'version': '0.1.0', 'build_number': '1'}))
+            bootstrap_tests.b.task_request(
+                json.dumps({'build_only': False, 'ios_action': action,
+                            'source_sha': 'a' * 40, 'builder_sha': 'b' * 40,
+                            'version': '0.1.0', 'build_number': '1'}),
+                approved_source_sha='a' * 40, approved_builder_sha='b' * 40)
 
     def test_automatic_public_release_is_submit_only_and_boolean(self):
         with self.assertRaises(ValueError):
@@ -474,20 +512,22 @@ class ReleaseMatrixTests(unittest.TestCase):
             }))
         with self.assertRaises(ValueError):
             bootstrap_tests.b.task_request(json.dumps({
-                'build_only': False, 'ios_action': 'upload', 'automatic_release': True,
-                'source_sha': 'a' * 40, 'version': '0.1.0', 'build_number': '42',
+            'build_only': False, 'ios_action': 'upload', 'automatic_release': True,
+                'source_sha': 'a' * 40, 'builder_sha': 'b' * 40,
+                'version': '0.1.0', 'build_number': '42',
             }))
         with self.assertRaises(ValueError):
             bootstrap_tests.b.task_request(json.dumps({
-                'build_only': False, 'ios_action': 'submit', 'automatic_release': 'true',
-                'source_sha': 'a' * 40, 'version': '0.1.0', 'build_number': '42',
+            'build_only': False, 'ios_action': 'submit', 'automatic_release': 'true',
+                'source_sha': 'a' * 40, 'builder_sha': 'b' * 40,
+                'version': '0.1.0', 'build_number': '42',
             }))
-        with bootstrap_tests.approved_launcher() as reviewed:
-            request = reviewed.task_request(json.dumps({
-                'build_only': False, 'ios_action': 'submit', 'automatic_release': True,
-                'source_sha': 'a' * 40, 'version': '0.1.0', 'build_number': '42',
-            }))
-            self.assertIs(json.loads(request)['automatic_release'], True)
+        request = bootstrap_tests.b.task_request(json.dumps({
+            'build_only': False, 'ios_action': 'submit', 'automatic_release': True,
+            'source_sha': 'a' * 40, 'builder_sha': 'b' * 40,
+            'version': '0.1.0', 'build_number': '42',
+        }), approved_source_sha='a' * 40, approved_builder_sha='b' * 40)
+        self.assertIs(json.loads(request)['automatic_release'], True)
 
     def test_optional_self_hosted_relay_kit_selection_is_boolean(self):
         base = {'build_only': True, 'ios_action': 'skip',
@@ -631,13 +671,16 @@ class ReleaseMatrixTests(unittest.TestCase):
 
     def test_full_release_requires_the_self_hosted_relay_kit(self):
         base = {'build_only': False, 'ios_action': 'upload', 'source_sha': 'a' * 40,
+                'builder_sha': 'b' * 40,
                 'version': '0.1.0', 'build_number': '42'}
-        with bootstrap_tests.approved_launcher() as reviewed:
-            with self.assertRaisesRegex(ValueError, 'Full releases require the self-hosted kit'):
-                reviewed.task_request(json.dumps({**base, 'include_selfhost': False}))
-            request = json.loads(reviewed.task_request(
-                json.dumps({**base, 'include_selfhost': True})))
-            self.assertIs(request['include_selfhost'], True)
+        with self.assertRaisesRegex(ValueError, 'Full releases require the self-hosted kit'):
+            bootstrap_tests.b.task_request(json.dumps({**base, 'include_selfhost': False}),
+                                           approved_source_sha='a' * 40,
+                                           approved_builder_sha='b' * 40)
+        request = json.loads(bootstrap_tests.b.task_request(
+            json.dumps({**base, 'include_selfhost': True}), approved_source_sha='a' * 40,
+            approved_builder_sha='b' * 40))
+        self.assertIs(request['include_selfhost'], True)
 
         text = (ROOT / '.github/workflows/release.yml').read_text()
         option = text.split('      include_selfhost:\n', 1)[1].split('\n      ', 1)[0]
