@@ -688,7 +688,7 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertEqual(patch.count('+    MaybeNotifyClose();'), 2)
         native_patch = (moq_root / 'patches/webtransport-server-connection-close.patch').read_text()
         self.assertIn('Http3ServerSession::OnConnectionClosed', native_patch)
-        self.assertIn('Http3ServerSession::~Http3ServerSession()', native_patch)
+        self.assertIn('(*itty).second->RemoveVisitorRemoveVisitor();', native_patch)
         self.assertIn('session_closed_ = false', native_patch)
 
         contracts = (ROOT / '.github/workflows/contracts.yml').read_text()
