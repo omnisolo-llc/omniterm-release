@@ -48,8 +48,8 @@ jobs:
         if: startsWith(matrix.platform, 'windows-')
         run: |
           dotnet tool install --tool-path "$RUNNER_TEMP/agent-wix" wix --version 6.0.2
-          "$RUNNER_TEMP/agent-wix/wix.exe" extension add WixToolset.UI.wixext/6.0.2
-          "$RUNNER_TEMP/agent-wix/wix.exe" extension add WixToolset.BootstrapperApplications.wixext/6.0.2
+          "$RUNNER_TEMP/agent-wix/wix.exe" extension add -g WixToolset.UI.wixext/6.0.2
+          "$RUNNER_TEMP/agent-wix/wix.exe" extension add -g WixToolset.BootstrapperApplications.wixext/6.0.2
           printf 'OMNI_AGENT_WIX=%s/agent-wix/wix.exe\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Read the pinned agent source
         id: approved

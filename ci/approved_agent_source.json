@@ -1,1 +1,5 @@
-{"source_sha":"b31750133005d9ae40393396c9350fbe3235a8e8","source_branch":"release/omni-agent-0.1.0-20260926","version":"0.1.0"}
+{
+  "source_sha": "935f97cfa55be66b39bfae468980c9934335be84",
+  "source_branch": "release/omni-agent-0.1.1-20261002",
+  "version": "0.1.1"
+}

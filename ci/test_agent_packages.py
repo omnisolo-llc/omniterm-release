@@ -11,4 +11,9 @@ class AgentPackageWorkflowTests(unittest.TestCase):
         self.assertNotIn('path: ${{ runner.temp }}/agent-release/omniterm-agent-',source)
         self.assertIn('if-no-files-found: error',source)
 
+    def test_wix_extensions_are_available_after_entering_the_private_source_directory(self):
+        source=(ROOT/'.github/workflows/omni-agent.yml').read_text()
+        for extension in ('WixToolset.UI.wixext','WixToolset.BootstrapperApplications.wixext'):
+            self.assertIn('extension add -g '+extension+'/6.0.2',source)
+
 if __name__=='__main__':unittest.main()
