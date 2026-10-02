@@ -683,7 +683,7 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertIn('nativeBuildPath(adapterRoot)', builder)
         self.assertIn('requireLoadedAddon', builder)
         self.assertIn('webtransport-client-close.patch', builder)
-        self.assertIn('client_sha256=', builder)
+        self.assertIn('client_patch_sha256=', builder)
         patch = (moq_root / 'patches/quiche-server-close-ack.patch').read_text()
         self.assertEqual(patch.count('+    MaybeNotifyClose();'), 2)
         native_patch = (moq_root / 'patches/webtransport-server-connection-close.patch').read_text()
