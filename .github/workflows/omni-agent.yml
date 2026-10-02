@@ -79,6 +79,10 @@ jobs:
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.OMNI_AGENT_DIAGNOSTICS_PUBLIC_KEY }}
           OMNI_AGENT_PLATFORM: ${{ matrix.platform }}
           OMNI_AGENT_OUTPUT: ${{ runner.temp }}/agent-release
+      - name: Require every platform package and verify exact output hashes
+        run: |
+          python3 ci/verify_agent_handoff.py --directory "$RUNNER_TEMP/agent-release" \
+            --version '${{ steps.approved.outputs.version }}' --platform '${{ matrix.platform }}'
       - name: Retain the complete native distribution and integrity manifest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
