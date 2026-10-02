@@ -1,0 +1,36 @@
+diff --git a/src/http3serversession.cc b/src/http3serversession.cc
+--- a/src/http3serversession.cc
++++ b/src/http3serversession.cc
+@@ -13,0 +14,1 @@
++#include <vector>
+@@ -50,0 +51,13 @@
++  void Http3ServerSession::OnConnectionClosed(
++      const QuicConnectionCloseFrame &frame, ConnectionCloseSource source) {
++    std::vector<Http3WTSession::Visitor *> visitors;
++    visitors.reserve(svisitors_.size());
++    for (const auto &entry : svisitors_) {
++      if (entry.second != nullptr) visitors.push_back(entry.second);
++    }
++    for (Http3WTSession::Visitor *visitor : visitors) {
++      visitor->OnSessionClosed(0, "quic_connection_closed");
++    }
++    QuicServerSessionBase::OnConnectionClosed(frame, source);
++  }
++
+diff --git a/src/http3serversession.h b/src/http3serversession.h
+--- a/src/http3serversession.h
++++ b/src/http3serversession.h
+@@ -55,0 +56,2 @@
++    void OnConnectionClosed(const QuicConnectionCloseFrame &frame,
++                            ConnectionCloseSource source) override;
+diff --git a/src/http3wtsessionvisitor.cc b/src/http3wtsessionvisitor.cc
+--- a/src/http3wtsessionvisitor.cc
++++ b/src/http3wtsessionvisitor.cc
+@@ -26,0 +27,2 @@
++        if (session_closed_) return;
++        session_closed_ = true;
+diff --git a/src/http3wtsessionvisitor.h b/src/http3wtsessionvisitor.h
+--- a/src/http3wtsessionvisitor.h
++++ b/src/http3wtsessionvisitor.h
+@@ -103,0 +104,1 @@
++          bool session_closed_ = false;

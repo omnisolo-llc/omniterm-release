@@ -32,13 +32,19 @@ MOQ_USAGE_TOKEN=<independent Worker-to-relay usage secret>
 MOQ_MANAGED_USAGE_REQUIRED=true
 ```
 
-Install the locked package and start it. Installation requires Git, CMake, a
-C++20 compiler, Python 3, and the ICU development libraries. The postinstall
-step rebuilds the native WebTransport adapter with OmniTerm's peer-close
-confirmation patch, using adapter commit `212ef743f0cf52adb234d60d5b41c48257e967b4`
-and its pinned Quiche submodule commit `80bf9559d3a4c08dde4b85abc46d190a88ffef64`.
-Owner cutoff is acknowledged only after that adapter reports the HTTP/3 session
-closed.
+Install the locked package and start it. Installation requires Git, tar, CMake,
+a C++20 compiler, Python 3, and the ICU development libraries. The postinstall
+step verifies and rebuilds the adapter source closure from the SHA-512 pinned
+npm tarball in `package-lock.json`
+(`sha512-UOcDhjzQEll2sYC2nGBtklTkKCdx442LVPP9jxp09ZU12qYTG65pjPBC38PbZAJEoIwkBP85h7o2fuIcN2W73Q==`).
+It uses adapter commit `212ef743f0cf52adb234d60d5b41c48257e967b4` only to verify
+the pinned Quiche gitlink `80bf9559d3a4c08dde4b85abc46d190a88ffef64`. Tracked
+patches cover the Quiche peer CLOSE/FIN acknowledgement, adapter-side reporting
+of observed QUIC connection shutdown, and deferred client teardown after the
+native receive callback unwinds. The rebuilt binary is installed at the exact
+platform-specific Release path selected by the adapter loader; the stock
+generic prebuild fallback and Debug addon are removed. Owner cutoff is
+acknowledged only after the patched adapter reports the HTTP/3 session closed.
 
 ```sh
 npm ci --omit=dev
@@ -97,12 +103,13 @@ be redacted from proxy/access logs.
 
 ### Native build identity and confirmed shutdown
 
-The install hook builds the pinned Quiche source rather than accepting an
-upstream prebuilt addon. Its receipt binds both patch files, the platform/CPU,
-the actual `build_<platform>_<arch>/Release/webtransport.node` loaded by Node,
-and the patched client socket source. A stale CMake path is rebuilt locally.
-`node scripts/build-patched-webtransport.mjs --verify-only` checks this receipt
-without downloads or compilation and fails on an absent or different addon.
+The install hook verifies the package-lock tarball integrity, adapter package
+version, pinned Quiche source identity, all three patch digests, the patched
+source trees, and the platform/CPU-specific Release binary. Its receipt is
+accepted only when Node loads that exact addon; a stale CMake path is rebuilt
+locally. `node scripts/build-patched-webtransport.mjs --verify-only` checks the
+receipt without downloads or compilation and fails on an absent or different
+addon.
 
 Client teardown waits until the native receive callback has unwound before
 releasing the socket. This preserves the peer FIN/close acknowledgement; it

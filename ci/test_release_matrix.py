@@ -181,6 +181,10 @@ class ReleaseMatrixTests(unittest.TestCase):
         for dependency in required_edges['publish'] - {'apple_submission'}:
             with self.subTest(publication_gate=dependency):
                 self.assertIn(f"needs.{dependency}.result == 'success'", publish)
+        apple_submission = jobs['apple_submission']
+        self.assertIn("needs.ios_delivery.result == 'success'", apple_submission)
+        self.assertIn('RELEASE_IOS_DELIVERY_RESULT: ${{ needs.ios_delivery.result }}',
+                      apple_submission)
         self.assertIn('needs.vpn_container.result == \'success\'', publish)
         self.assertIn('needs.managed_rtc_provider.result == \'success\'', publish)
         self.assertIn("inputs.ios_action == 'upload' || needs.apple_submission.result == 'success'", publish)
@@ -667,6 +671,13 @@ class ReleaseMatrixTests(unittest.TestCase):
         builder = (moq_root / 'scripts/build-patched-webtransport.mjs').read_text()
         self.assertIn('212ef743f0cf52adb234d60d5b41c48257e967b4', builder)
         self.assertIn('80bf9559d3a4c08dde4b85abc46d190a88ffef64', builder)
+        self.assertIn('npm_tarball_integrity', builder)
+        self.assertIn('patch_sha256', builder)
+        self.assertIn("'--unidiff-zero'", builder)
+        self.assertIn('build_${process.platform}_${process.arch}/Release/webtransport.node',
+                      builder)
+        self.assertIn('package-lock.json', builder)
+        self.assertIn("join(packageRoot, 'node_modules', '.bin')", builder)
         self.assertIn('binary_sha256', builder)
         self.assertIn("npm_config_build_from_source: 'true'", builder)
         self.assertNotIn("'build.js', 'install'", builder)
@@ -677,6 +688,9 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertIn('client_sha256=', builder)
         patch = (moq_root / 'patches/quiche-server-close-ack.patch').read_text()
         self.assertEqual(patch.count('+    MaybeNotifyClose();'), 2)
+        native_patch = (moq_root / 'patches/webtransport-server-connection-close.patch').read_text()
+        self.assertIn('Http3ServerSession::OnConnectionClosed', native_patch)
+        self.assertIn('session_closed_ = false', native_patch)
 
         contracts = (ROOT / '.github/workflows/contracts.yml').read_text()
         moq_job = contracts.split('\n  first-party-moq:\n', 1)[1].split(
