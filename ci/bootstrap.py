@@ -124,7 +124,11 @@ def private_task_environment(env, submodule_token):
 
 
 def validate_integration_authority(env, repo, branch):
-    """Every private source task must run from this canonical protected workflow."""
+    """Each private source task requires its own canonical protected workflow."""
+    if env.get('SOURCE_ENTRYPOINT') == 'scripts/release/agent_entrypoint.py':
+        from agent_authority import validate_agent_build_authority
+        validate_agent_build_authority(env, repo, branch)
+        return
     builder = 'omnisolo-llc/omniterm-release'
     if (env.get('GITHUB_ACTIONS') != 'true'
             or env.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'
