@@ -175,6 +175,30 @@ class IntegrationHandoffTests(unittest.TestCase):
         self.assertNotIn('GH_TOKEN:', managed_rtc)
         self.assertNotIn('SIGNING_CONFIG:', managed_rtc)
 
+    def test_linux_external_tests_refresh_and_verify_the_archive_fixture_before_capture(self):
+        workflow = (Path(__file__).resolve().parent.parent / '.github/workflows/release.yml').read_text()
+        linux_external = self.job(workflow, 'external_tests')
+        metadata = linux_external.split(
+            '      - name: Verify genuine Ubuntu archive metadata for Linux external tests\n', 1)[1]
+        metadata = metadata.split(
+            '      - name: Execute exact external cases against real candidate and providers\n', 1)[0]
+        self.assertIn("if: matrix.platform == 'linux'", linux_external)
+        self.assertIn('sudo apt-get update', metadata)
+        self.assertIn('ubuntu-archive-keyring', metadata)
+        self.assertIn('dpkg-query -S "$keyring"', metadata)
+        self.assertIn('dpkg --verify ubuntu-keyring', metadata)
+        self.assertIn('gpgv --status-fd 1 --keyring "$keyring" "$metadata"', metadata)
+        self.assertIn('F6ECB3762474EDA9D21B7022871920D1991BC93C', metadata)
+
+    def test_validation_uses_the_protocol_fixture_python_runtime(self):
+        workflow = (Path(__file__).resolve().parent.parent / '.github/workflows/release.yml').read_text()
+        validate = self.job(workflow, 'validate')
+        setup = validate.index('actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c')
+        setup_step = validate[setup:].split('\n      - ', 1)[0]
+        self.assertIn("python-version: '3.14'", setup_step)
+        validation = validate.index('RELEASE_TARGET: validate')
+        self.assertLess(setup, validation)
+
     def test_launcher_accepts_reviewed_installation_and_delivery_targets(self):
         for target in ('integration', 'installation', 'vpn-container', 'managed-rtc-provider', 'package-signatures', 'apple-testflight',
                        'validate', 'ios-deliver', 'ios-submit', 'publication-prepare',
