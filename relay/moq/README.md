@@ -32,7 +32,13 @@ MOQ_USAGE_TOKEN=<independent Worker-to-relay usage secret>
 MOQ_MANAGED_USAGE_REQUIRED=true
 ```
 
-Install the locked package and start it:
+Install the locked package and start it. Installation requires Git, CMake, a
+C++20 compiler, Python 3, and the ICU development libraries. The postinstall
+step rebuilds the native WebTransport adapter with OmniTerm's peer-close
+confirmation patch, using adapter commit `212ef743f0cf52adb234d60d5b41c48257e967b4`
+and its pinned Quiche submodule commit `80bf9559d3a4c08dde4b85abc46d190a88ffef64`.
+Owner cutoff is acknowledged only after that adapter reports the HTTP/3 session
+closed.
 
 ```sh
 npm ci --omit=dev

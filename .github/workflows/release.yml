@@ -240,6 +240,10 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24.21.0'
+      - name: Install native HTTP/3 build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libicu-dev
       - name: Verify public launcher contracts
         run: python3 -m unittest discover -s ci -p 'test_*.py'
       - name: Verify self-hosted relay package locks and suites
@@ -248,6 +252,9 @@ jobs:
           node --test --test-concurrency=1 ci/test_native_relay_contract.mjs
           npm ci --prefix relay/moq
           npm test --prefix relay/moq
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.14'
       - name: Validate reviewed source revision
         run: python3 ci/bootstrap.py
         env:
@@ -1095,6 +1102,7 @@ jobs:
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          PRIVATE_RELEASE_TOKEN: ${{ secrets.PRIVATE_RELEASE_TOKEN }}
           GH_TOKEN: ${{ github.token }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
       - name: Retain encrypted diagnostics only
