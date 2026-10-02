@@ -4,7 +4,6 @@ import importlib.util
 import io
 import json
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -16,20 +15,6 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('bootstrap', Path(__file__).with_name('bootstrap.py'))
 b = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(b)
-
-
-@contextlib.contextmanager
-def approved_launcher():
-    # Load unchanged production code beside an actual parser-input approval file.
-    # This exercises file validation without replacing any function or process.
-    with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / 'bootstrap.py'
-        shutil.copyfile(Path(b.__file__), path)
-        path.with_name('approved_release_source.json').write_text(json.dumps({'source_sha': 'a' * 40}))
-        spec = importlib.util.spec_from_file_location('reviewed_launcher_contract', path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        yield module
 
 
 class BootstrapTests(unittest.TestCase):
@@ -216,8 +201,8 @@ class ReleaseInputTests(unittest.TestCase):
 
         full_release = {**build_only, 'build_only': False, 'ios_action': 'upload',
                         'include_selfhost': False}
-        with approved_launcher() as reviewed, self.assertRaises(ValueError):
-            reviewed.task_request(json.dumps(full_release))
+        with self.assertRaises(ValueError):
+            b.task_request(json.dumps(full_release))
 
         with self.assertRaises(ValueError):
             b.task_request(json.dumps({**build_only, 'unexpected': 'field'}))
@@ -233,41 +218,126 @@ class ReleaseInputTests(unittest.TestCase):
         for build_only, ios_action in ((True, 'skip'), (False, 'upload')):
             base = {'build_only': build_only, 'ios_action': ios_action,
                     'source_sha': 'a' * 40, 'version': '0.1.0'}
-            with approved_launcher() as reviewed:
-                for value in ('', '202609231407', '10000', '0'):
-                    with self.subTest(build_only=build_only, value=value), self.assertRaises(ValueError):
-                        reviewed.task_request(json.dumps({**base, 'build_number': value}))
+            approval = {} if build_only else {
+                'approved_source_sha': 'a' * 40,
+                'approved_builder_sha': 'b' * 40,
+            }
+            request = {**base, 'build_number': '9999'}
+            if not build_only:
+                request['builder_sha'] = 'b' * 40
+            for value in ('', '202609231407', '10000', '0'):
+                with self.subTest(build_only=build_only, value=value), self.assertRaises(ValueError):
+                    b.task_request(json.dumps({**request, 'build_number': value}), **approval)
 
-                request = json.loads(reviewed.task_request(json.dumps({**base, 'build_number': '9999'})))
-                self.assertEqual(request['build_number'], '9999')
+            request = json.loads(b.task_request(
+                json.dumps(request), **approval))
+            self.assertEqual(request['build_number'], '9999')
 
     def test_full_release_requires_explicit_reviewed_source_in_every_job(self):
-        base = {'build_only': False, 'ios_action': 'upload', 'build_number': '42'}
-        with approved_launcher() as reviewed:
-            for source in ('', 'b' * 40):
-                with self.subTest(source=source), self.assertRaises(ValueError):
-                    reviewed.task_request(json.dumps({**base, 'source_sha': source}),
-                                   allow_missing_source_sha=True)
-            approved = {**base, 'source_sha': 'A' * 40}
-            self.assertEqual(json.loads(reviewed.task_request(json.dumps(approved)))['source_sha'],
-                             'a' * 40)
-            with self.assertRaises(ValueError):
-                reviewed.task_request(json.dumps(approved), resolved={'source_sha': 'b' * 40})
+        base = {'build_only': False, 'ios_action': 'upload', 'build_number': '42',
+                'builder_sha': 'b' * 40}
+        approved_sha = 'a' * 40
+        approved_builder_sha = 'b' * 40
+        for source in ('', 'b' * 40):
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                b.task_request(json.dumps({**base, 'source_sha': source}),
+                               approved_source_sha=approved_sha,
+                               approved_builder_sha=approved_builder_sha,
+                               allow_missing_source_sha=True)
+        approved = {**base, 'source_sha': 'A' * 40}
+        self.assertEqual(json.loads(b.task_request(
+            json.dumps(approved), approved_source_sha=approved_sha,
+            approved_builder_sha=approved_builder_sha))['source_sha'], approved_sha)
+        with self.assertRaises(ValueError):
+            b.task_request(json.dumps(approved), resolved={'source_sha': 'b' * 40},
+                           approved_builder_sha=approved_builder_sha)
 
-    def test_reviewed_source_file_is_exact_and_fail_closed(self):
+    def test_release_approval_requires_source_and_builder_pins_bound_to_this_run(self):
+        approved_source = 'a' * 40
+        approved_builder = 'b' * 40
+        approval = {
+            'APPROVED_RELEASE_SOURCE_SHA': approved_source,
+            'APPROVED_RELEASE_BUILDER_SHA': approved_builder,
+            'GITHUB_SHA': approved_builder,
+        }
+        self.assertEqual(
+            b.validate_release_source_approval(
+                approval, approved_source, approved_builder),
+            {'source_sha': approved_source, 'builder_sha': approved_builder},
+        )
+
+        invalid_cases = (
+            ({**approval, 'APPROVED_RELEASE_SOURCE_SHA': ''}, approved_source, approved_builder),
+            ({**approval, 'APPROVED_RELEASE_BUILDER_SHA': ''}, approved_source, approved_builder),
+            ({**approval, 'APPROVED_RELEASE_SOURCE_SHA': 'A' * 40}, approved_source, approved_builder),
+            ({**approval, 'APPROVED_RELEASE_BUILDER_SHA': '0' * 40}, approved_source, approved_builder),
+            ({**approval, 'APPROVED_RELEASE_BUILDER_SHA': 'c' * 40}, approved_source, approved_builder),
+            ({key: value for key, value in approval.items() if key != 'GITHUB_SHA'},
+             approved_source, approved_builder),
+            (approval, 'c' * 40, approved_builder),
+            (approval, approved_source, 'c' * 40),
+            ({**approval, 'GITHUB_SHA': 'c' * 40}, approved_source, approved_builder),
+        )
+        for env, requested_source, requested_builder in invalid_cases:
+            with self.subTest(env=env, requested_source=requested_source,
+                              requested_builder=requested_builder), self.assertRaises(ValueError):
+                b.validate_release_source_approval(
+                    env, requested_source, requested_builder)
+
+    def test_full_release_request_binds_builder_sha_and_build_only_does_not_require_it(self):
+        full = {
+            'build_only': False, 'ios_action': 'upload', 'source_sha': 'a' * 40,
+            'builder_sha': 'b' * 40, 'version': '1.2.3', 'build_number': '42',
+        }
+        normalized = json.loads(b.task_request(
+            json.dumps(full), approved_source_sha='a' * 40,
+            approved_builder_sha='b' * 40))
+        self.assertNotIn('builder_sha', normalized)
+        for change in ({'builder_sha': ''}, {'builder_sha': 'c' * 40}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                b.task_request(
+                    json.dumps({**full, **change}), approved_source_sha='a' * 40,
+                    approved_builder_sha='b' * 40)
+
+        build_only = {'build_only': True, 'ios_action': 'skip', 'source_sha': 'a' * 40,
+                      'version': '1.2.3', 'build_number': '42'}
+        normalized = json.loads(b.task_request(json.dumps(build_only)))
+        self.assertNotIn('builder_sha', normalized)
+
+    def test_approval_action_exports_only_validated_commit_pins(self):
+        script = Path(b.__file__).with_name('validate_release_source_approval.py')
         with tempfile.TemporaryDirectory() as temp:
-            approval = Path(temp) / 'approval.json'
-            for value in ({'source_sha': ''}, {'source_sha': 'A' * 40},
-                          {'source_sha': 'a' * 40, 'other': True}):
-                approval.write_text(json.dumps(value))
-                with self.assertRaises(ValueError):
-                    b.approved_release_sha(approval)
-            approval.write_text(json.dumps({'source_sha': 'a' * 40}))
-            self.assertEqual(b.approved_release_sha(approval), 'a' * 40)
-            linked = Path(temp) / 'linked.json'
-            linked.symlink_to(approval)
-            with self.assertRaises(ValueError):
-                b.approved_release_sha(linked)
+            output_path = Path(temp) / 'workflow-output'
+            output_path.touch()
+            env = {
+                **os.environ,
+                'APPROVED_RELEASE_SOURCE_SHA': 'a' * 40,
+                'APPROVED_RELEASE_BUILDER_SHA': 'b' * 40,
+                'GITHUB_SHA': 'b' * 40,
+                'REQUESTED_SOURCE_SHA': 'a' * 40,
+                'REQUESTED_BUILDER_SHA': 'b' * 40,
+                'GITHUB_OUTPUT': str(output_path),
+            }
+            accepted = subprocess.run([sys.executable, str(script)], env=env,
+                                      capture_output=True, text=True, timeout=30)
+            self.assertEqual(accepted.returncode, 0)
+            self.assertEqual(accepted.stdout, '')
+            self.assertEqual(output_path.read_text(),
+                             f"source_sha={'a' * 40}\nbuilder_sha={'b' * 40}\n")
+
+            output_path.write_text('')
+            rejected = subprocess.run(
+                [sys.executable, str(script)],
+                env={**env, 'REQUESTED_BUILDER_SHA': 'c' * 40},
+                capture_output=True, text=True, timeout=30)
+            self.assertEqual(rejected.returncode, 1)
+            self.assertEqual(output_path.read_text(), '')
+
+    def test_build_only_request_does_not_require_release_approval_pins(self):
+        raw = json.dumps({'build_only': True, 'ios_action': 'skip',
+                          'source_sha': 'a' * 40, 'build_number': '42'})
+        request = json.loads(b.task_request(raw))
+        self.assertEqual(request['source_sha'], 'a' * 40)
 
 
 class SSHLauncherTests(unittest.TestCase):
