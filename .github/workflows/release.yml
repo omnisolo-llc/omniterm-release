@@ -1024,7 +1024,7 @@ jobs:
   apple_submission:
     name: Submit accepted iOS candidate for public review
     needs: [resolve, validate, ios_delivery, publication_prepare, vpn_container, external_tests, external_windows_signing]
-    if: ${{ !cancelled() && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action == 'submit' && needs.vpn_container.result == 'success' && needs.external_tests.result == 'success' && needs.external_windows_signing.result == 'success' }}
+    if: ${{ !cancelled() && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action == 'submit' && needs.ios_delivery.result == 'success' && needs.vpn_container.result == 'success' && needs.external_tests.result == 'success' && needs.external_windows_signing.result == 'success' }}
     environment: app-store
     runs-on: macos-26
     timeout-minutes: 180
@@ -1041,6 +1041,7 @@ jobs:
         run: python3 ci/bootstrap.py
         env:
           RELEASE_TARGET: ios-submit
+          RELEASE_IOS_DELIVERY_RESULT: ${{ needs.ios_delivery.result }}
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
