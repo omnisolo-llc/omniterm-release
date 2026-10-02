@@ -945,6 +945,7 @@ jobs:
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          PRIVATE_RELEASE_TOKEN: ${{ secrets.PRIVATE_RELEASE_TOKEN }}
           GH_TOKEN: ${{ github.token }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
       - name: Retain encrypted diagnostics only
