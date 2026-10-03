@@ -58,6 +58,15 @@ def valid_record(value, fields):
             and re.fullmatch('[a-f0-9]{64}', value['sha256']) is not None)
 
 
+def unique_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError('Package manifest contains duplicate object keys')
+        value[key] = item
+    return value
+
+
 def verify(directory, version, platform):
     expected = package_names(version, platform)
     directory = Path(directory)
@@ -68,7 +77,7 @@ def verify(directory, version, platform):
         raise ValueError('Incomplete package formats or unexpected private handoff files')
     manifest_path = directory / manifest_name
     regular(manifest_path, 65536)
-    value = json.loads(manifest_path.read_bytes())
+    value = json.loads(manifest_path.read_bytes(), object_pairs_hook=unique_json_object)
     if (not isinstance(value, dict) or set(value) != {
             'schema', 'version', 'platform', 'platform_signing', 'payload', 'assets'}
             or type(value['schema']) is not int or value['schema'] != 1
