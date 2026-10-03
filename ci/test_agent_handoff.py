@@ -54,6 +54,20 @@ class AgentHandoffTests(unittest.TestCase):
                 manifest.write_text(json.dumps(value))
                 with self.assertRaises(ValueError): gate.verify(root, '0.1.1', 'windows-aarch64')
 
+    def test_duplicate_manifest_properties_are_rejected_as_ambiguous(self):
+        for source, duplicate in (
+            ('"schema": 1', '"schema": 0, "schema": 1'),
+            ('"size": 1', '"size": 0, "size": 1'),
+        ):
+            with self.subTest(property=source), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                manifest, _ = self.fixture(root)
+                valid = manifest.read_text()
+                self.assertIn(source, valid)
+                manifest.write_text(valid.replace(source, duplicate, 1))
+                with self.assertRaisesRegex(ValueError, 'duplicate object keys'):
+                    gate.verify(root, '0.1.1', 'windows-aarch64')
+
     def test_versions_and_platforms_cannot_select_arbitrary_paths(self):
         for version in ('../1.2.3', '1.2.3\n', '01.2.3', '1.2', '256.0.0'):
             with self.subTest(version=version), self.assertRaises(ValueError):
