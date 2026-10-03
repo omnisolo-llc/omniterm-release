@@ -222,7 +222,7 @@ export async function dispatchRtc(request, configuration, core, connector, optio
   try {
     const upstream = await (options.fetcher ?? fetch)(new URL('/offer', configuration.endpoint), {
       method: 'POST',
-      redirect: 'error',
+      redirect: 'manual',
       signal: AbortSignal.timeout(20000),
       headers: {
         'content-type': 'application/json',
