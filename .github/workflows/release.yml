@@ -920,7 +920,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Verify genuine Ubuntu archive metadata for Linux external tests
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.14'
+      - uses: ruby/setup-ruby@d697be2f83c6234b20877c3b5eac7a7f342f0d0c # v1.269.0
+        if: matrix.platform == 'macos'
+        with:
+          ruby-version: '3.4.7'
+      - name: Verify trusted Ubuntu archive keyring for Linux external tests
         if: matrix.platform == 'linux'
         run: |
           set -euo pipefail
@@ -932,9 +939,42 @@ jobs:
           verify_output="$(dpkg --verify ubuntu-keyring)"
           test -z "$verify_output"
           sudo -n true
-          command -v gpg >/dev/null || { echo 'missing gpg required by the protected Ubuntu signature cases' >&2; exit 1; }
-          command -v gpgv >/dev/null || { echo 'missing gpgv required for Ubuntu InRelease preflight' >&2; exit 1; }
-          sudo apt-get update
+          command -v gpgv >/dev/null || { echo 'gpgv is required to update the trusted Ubuntu package index' >&2; exit 1; }
+          sudo -n apt-get update
+      - name: Provision Linux Python external-test host prerequisites
+        if: matrix.platform == 'linux'
+        run: |
+          set -euo pipefail
+          sudo -n apt-get install -y --no-install-recommends \
+            bash \
+            coreutils \
+            g++ \
+            g++-mingw-w64-x86-64 \
+            gcc-mingw-w64-x86-64 \
+            gnupg \
+            gpgv \
+            libglib2.0-dev \
+            openjdk-17-jdk-headless \
+            pkg-config
+      - name: Verify Linux Python external-test host prerequisites
+        if: matrix.platform == 'linux'
+        run: |
+          set -euo pipefail
+          for tool in bash g++ x86_64-w64-mingw32-g++ x86_64-w64-mingw32-gcc \
+            gpg gpgconf gpgv java javac pkg-config python3 sha256sum; do
+            command -v "$tool" >/dev/null || { echo "missing protected Python host prerequisite: $tool" >&2; exit 1; }
+          done
+          pkg-config --exists gio-unix-2.0
+          java_version="$(java -version 2>&1)"
+          javac_version="$(javac -version 2>&1)"
+          grep -Eq 'version "17([.]|")' <<< "$java_version"
+          grep -Eq '^javac 17([.]|$)' <<< "$javac_version"
+          keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg
+          test -f "$keyring" && test ! -L "$keyring" && test -s "$keyring"
+          test "$(dpkg-query -W -f='${Status}' ubuntu-keyring)" = 'install ok installed'
+          dpkg-query -S "$keyring" | grep -Eq '^ubuntu-keyring(:[^:]*)?: /usr/share/keyrings/ubuntu-archive-keyring[.]gpg$'
+          verify_output="$(dpkg --verify ubuntu-keyring)"
+          test -z "$verify_output"
           ubuntu_archive_signer=F6ECB3762474EDA9D21B7022871920D1991BC93C
           found_inrelease=0
           for metadata in /var/lib/apt/lists/*_dists_*_InRelease; do
