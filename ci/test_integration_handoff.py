@@ -175,20 +175,44 @@ class IntegrationHandoffTests(unittest.TestCase):
         self.assertNotIn('GH_TOKEN:', managed_rtc)
         self.assertNotIn('SIGNING_CONFIG:', managed_rtc)
 
-    def test_linux_external_tests_refresh_and_verify_the_archive_fixture_before_capture(self):
+    def test_linux_external_test_host_is_provisioned_before_exact_case_execution(self):
         workflow = (Path(__file__).resolve().parent.parent / '.github/workflows/release.yml').read_text()
-        linux_external = self.job(workflow, 'external_tests')
-        metadata = linux_external.split(
-            '      - name: Verify genuine Ubuntu archive metadata for Linux external tests\n', 1)[1]
-        metadata = metadata.split(
-            '      - name: Execute exact external cases against real candidate and providers\n', 1)[0]
-        self.assertIn("if: matrix.platform == 'linux'", linux_external)
-        self.assertIn('sudo apt-get update', metadata)
-        self.assertIn('ubuntu-archive-keyring', metadata)
-        self.assertIn('dpkg-query -S "$keyring"', metadata)
-        self.assertIn('dpkg --verify ubuntu-keyring', metadata)
-        self.assertIn('gpgv --status-fd 1 --keyring "$keyring" "$metadata"', metadata)
-        self.assertIn('F6ECB3762474EDA9D21B7022871920D1991BC93C', metadata)
+        job = self.job(workflow, 'external_tests')
+        steps = re.split(r'(?m)^      - ', job.split('    steps:\n', 1)[1])
+        linux_steps = [step for step in steps if "if: matrix.platform == 'linux'" in step]
+
+        def one_step(predicate):
+            matches = [step for step in linux_steps if predicate(step)]
+            self.assertEqual(len(matches), 1)
+            return matches[0]
+
+        archive = one_step(lambda step: 'sudo -n apt-get update' in step
+                           and 'dpkg --verify ubuntu-keyring' in step)
+        provision = one_step(lambda step: 'sudo -n apt-get install -y --no-install-recommends' in step)
+        verify = one_step(lambda step: 'pkg-config --exists gio-unix-2.0' in step
+                          and 'VALIDSIG ${ubuntu_archive_signer}' in step)
+        execution = next(step for step in steps if 'RELEASE_TARGET: external-tests' in step)
+        setup_python = next(step for step in steps
+                            if 'actions/setup-python@' in step and "python-version: '3.14'" in step)
+        setup_ruby = next(step for step in steps
+                          if 'ruby/setup-ruby@' in step and "ruby-version: '3.4.7'" in step)
+
+        self.assertLess(steps.index(archive), steps.index(provision))
+        self.assertLess(steps.index(provision), steps.index(verify))
+        self.assertLess(steps.index(verify), steps.index(execution))
+        self.assertLess(steps.index(setup_python), steps.index(execution))
+        self.assertLess(steps.index(setup_ruby), steps.index(execution))
+        for package in ('g++', 'g++-mingw-w64-x86-64', 'gcc-mingw-w64-x86-64',
+                        'libglib2.0-dev', 'openjdk-17-jdk-headless', 'pkg-config'):
+            self.assertIn(package, provision)
+        self.assertIn('command -v "$tool"', verify)
+        for tool in ('x86_64-w64-mingw32-g++', 'x86_64-w64-mingw32-gcc',
+                     'gpgconf', 'javac'):
+            self.assertIn(tool, verify)
+        self.assertIn('ubuntu-archive-keyring', archive)
+        self.assertIn('dpkg-query -S "$keyring"', archive)
+        self.assertIn('gpgv --status-fd 1 --keyring "$keyring" "$metadata"', verify)
+        self.assertIn('F6ECB3762474EDA9D21B7022871920D1991BC93C', verify)
 
     def test_validation_uses_the_protocol_fixture_python_runtime(self):
         workflow = (Path(__file__).resolve().parent.parent / '.github/workflows/release.yml').read_text()
