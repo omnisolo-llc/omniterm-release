@@ -194,7 +194,7 @@ jobs:
   verify:
     name: Verify ${{ matrix.target }} build (${{ needs.resolve.outputs.workflow_id }})
     needs: resolve
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && inputs.build_only
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && inputs.build_only }}
     environment: downloads
     permissions:
       contents: read
