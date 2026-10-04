@@ -56,7 +56,7 @@ fn every_public_workflow_uses_native_launch_and_contracts_without_legacy_runtime
     for (name, job) in release["jobs"].as_mapping().unwrap() {
         let name = name.as_str().unwrap();
         let command = if name == "release_source_approval" {
-            "approve-source"
+            "validate-request"
         } else if name == "resolve" {
             "resolve"
         } else {
@@ -478,17 +478,10 @@ fn permissions_environments_and_all_task_inputs_keep_exact_step_scope() {
         .find(|s| s["id"].as_str() == Some("approve"))
         .unwrap();
     for (key, value) in [
-        (
-            "APPROVED_RELEASE_SOURCE_SHA",
-            "${{ vars.APPROVED_RELEASE_SOURCE_SHA }}",
-        ),
-        (
-            "APPROVED_RELEASE_BUILDER_SHA",
-            "${{ vars.APPROVED_RELEASE_BUILDER_SHA }}",
-        ),
+        ("RELEASE_REQUEST", "${{ toJSON(inputs) }}"),
         ("GITHUB_SHA", "${{ github.sha }}"),
-        ("REQUESTED_SOURCE_SHA", "${{ inputs.source_sha }}"),
-        ("REQUESTED_BUILDER_SHA", "${{ inputs.builder_sha }}"),
+        ("SOURCE_REPOSITORY", "ql-owo-lp/omniterm"),
+        ("SOURCE_BRANCH", "main"),
     ] {
         assert_eq!(approval["env"][key].as_str(), Some(value));
     }
@@ -496,17 +489,12 @@ fn permissions_environments_and_all_task_inputs_keep_exact_step_scope() {
         approval["env"]["SOURCE_DEPLOY_KEY"].is_null()
             && approval["env"]["STORAGE_CONFIG"].is_null()
     );
-    for key in ["SOURCE_SHA", "BUILDER_SHA"] {
-        assert_eq!(
-            task(&jobs["resolve"])["env"][format!("APPROVED_RELEASE_{key}").as_str()].as_str(),
-            Some(
-                format!(
-                    "${{{{ needs.release_source_approval.outputs.{} }}}}",
-                    key.to_ascii_lowercase()
-                )
-                .as_str()
-            )
-        );
+    for key in [
+        "APPROVED_RELEASE_SOURCE_SHA",
+        "APPROVED_RELEASE_BUILDER_SHA",
+    ] {
+        assert!(approval["env"][key].is_null());
+        assert!(task(&jobs["resolve"])["env"][key].is_null());
     }
 }
 fn matrix_values<'a>(job: &'a Value, key: &str) -> BTreeSet<&'a str> {

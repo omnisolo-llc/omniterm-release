@@ -54,21 +54,29 @@ never publishes files, and an unsigned verification APK is not a release downloa
 
 ## For maintainers
 
-Run **Actions → Release → Run workflow** on `main`. Build-only runs may leave
-the source SHA blank to inspect the latest private branch tip. Full releases
-require the protected `release-source-approval` environment. Configure required
-reviewers and restrict its deployment branch to `main`. After the source `main`
-and public-builder `main` have both been reviewed and frozen, set the environment
-variables `APPROVED_RELEASE_SOURCE_SHA` and `APPROVED_RELEASE_BUILDER_SHA` to
-their exact 40-character lowercase commit SHAs. Do not populate these values before both
-main branches are frozen. The source SHA must match the workflow input; the
-builder SHA must match the current workflow commit. Missing, malformed, zero,
-foreign, or stale pins block resolution. Any change to either candidate requires
-reviewing and updating both environment pins before another full release.
-Enter the approved source SHA in the full-release workflow input. Every later
-job uses that same resolved commit. The version defaults to `0.1.0`. Platform
-job names include a UTC workflow identifier in `yyyymmddHHmm` format. Supply a
-fresh shared app build number from `1` to `9999`.
+Run **Actions → Release → Run workflow** on `main`. An active GitHub Actions
+execution policy restricts `release.yml` and `omni-agent.yml` to repository
+administrators and explicitly configured release operators. The default policy
+is admin-only and permits only `workflow_dispatch`; ordinary contributor CI is
+not restricted by that policy. Manage the operator allowlist through GitHub's
+Actions policy API, not through user-supplied workflow inputs.
+
+Leave `source_sha` blank to resolve the latest private `main` once, or supply a
+full 40-character commit SHA on private main ancestry. Leave `builder_sha` blank
+to use the executing workflow commit; an explicit builder SHA must match it.
+Every later job uses the same frozen source commit, and its `omniterm-release`
+gitlink must match the executing builder before private code runs. Malformed,
+zero, foreign, or mismatched revisions fail automatically.
+
+The historical `release-source-approval` job/environment name remains for
+compatibility, but it validates request syntax automatically: no manually
+maintained `APPROVED_RELEASE_SOURCE_SHA` or `APPROVED_RELEASE_BUILDER_SHA` variables
+are used by this workflow. Do not add per-stage required reviewers; preserve
+main-only environment branch restrictions and the enforced operator policy.
+Tests, signing, installation, provider evidence, and package verification remain
+mandatory. The version defaults to `0.1.0`, so select `0.1.1` explicitly for that
+release. Platform job names include a UTC workflow identifier in `yyyymmddHHmm`
+format. Supply a fresh shared app build number from `1` to `9999`.
 Configure the source secrets for `ql-owo-lp/omniterm`, branch `main`, and
 `scripts/release/entrypoint.py`; the launcher rejects a different source identity.
 Configure repository variable `OMNITERM_VPN_PROVIDER_PUBLIC_KEY` as the canonical
@@ -90,7 +98,7 @@ The protected `vpn-installation-linux`, `vpn-installation-macos`,
 `vpn-installation-ios` environments each need the installation job's required
 source, build, storage, and diagnostics secrets, plus that platform's device,
 install-config, and owner-only profile variables. Each environment must have the
-same reviewers and `main` branch restriction as `downloads`. Configure the
+same `main` branch restriction as `downloads`, without per-stage reviewer prompts. Configure the
 owner-only profile variable as `OMNI_VPN_INSTALLATION_PROFILE_<PLATFORM>` for its
 matching platform. Set `OMNI_VPN_RECEIVER_TRUSTED_JWKS_JSON` and
 `OMNI_VPN_TRUSTED_GATEWAY_POLICIES_JSON` in each environment to the reviewed

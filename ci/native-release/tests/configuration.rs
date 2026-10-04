@@ -89,6 +89,61 @@ fn all_targets_validate_configuration_without_unrelated_signing_or_optional_iden
     launch::validate_configuration(&resolve, "resolve").unwrap();
 }
 #[test]
+fn full_release_resolves_latest_main_without_manual_sha_approvals() {
+    let mut environment = env();
+    let mut request = full();
+    request["source_sha"] = json!("");
+    request["builder_sha"] = json!("");
+    environment.insert("RELEASE_TARGET".into(), "resolve".into());
+    environment.insert("RELEASE_REQUEST".into(), request.to_string());
+    let resolved = launch::validate_configuration(&environment, "resolve")
+        .expect("an authorized request may select main automatically");
+    assert!(resolved.source_sha.is_empty());
+    assert_eq!(resolved.builder_sha, "b".repeat(40));
+}
+
+#[test]
+fn full_release_keeps_explicit_sha_and_binds_later_jobs_to_resolver() {
+    let mut environment = env();
+    let mut request = full();
+    environment.insert("RELEASE_TARGET".into(), "resolve".into());
+    environment.insert("RELEASE_REQUEST".into(), request.to_string());
+    assert_eq!(
+        launch::validate_configuration(&environment, "resolve")
+            .unwrap()
+            .source_sha,
+        "a".repeat(40)
+    );
+    request["source_sha"] = json!("");
+    request["builder_sha"] = json!("");
+    environment.insert("RELEASE_REQUEST".into(), request.to_string());
+    environment.insert("RELEASE_TARGET".into(), "linux".into());
+    environment.insert("RESOLVED_SOURCE_SHA".into(), "c".repeat(40));
+    environment.insert(
+        "BUILD_CONFIG".into(),
+        r#"{"OMNI_ENABLE_VPN":"true"}"#.into(),
+    );
+    environment.insert("STORAGE_CONFIG".into(), "{}".into());
+    assert_eq!(
+        launch::validate_configuration(&environment, "run")
+            .unwrap()
+            .source_sha,
+        "c".repeat(40)
+    );
+    request["source_sha"] = json!("a".repeat(40));
+    environment.insert("RELEASE_REQUEST".into(), request.to_string());
+    assert!(launch::validate_configuration(&environment, "run").is_err());
+    request["source_sha"] = json!("");
+    request["builder_sha"] = json!("d".repeat(40));
+    environment.insert("RELEASE_REQUEST".into(), request.to_string());
+    assert!(launch::validate_configuration(&environment, "run").is_err());
+    request["builder_sha"] = json!("");
+    environment.insert("RELEASE_REQUEST".into(), request.to_string());
+    environment.remove("RESOLVED_SOURCE_SHA");
+    assert!(launch::validate_configuration(&environment, "run").is_err());
+}
+
+#[test]
 fn foreign_identity_paths_commands_and_missing_fields_fail_before_any_acquisition() {
     for (key, values) in [
         (
@@ -252,7 +307,9 @@ fn numeric_versions_source_defaults_resolution_preview_and_boolean_contracts_are
         let mut e = env();
         e.insert("RELEASE_REQUEST".into(), raw.to_string());
         e.insert("RELEASE_TARGET".into(), "resolve".into());
-        assert!(launch::validate_configuration(&e, "resolve").is_err());
+        let resolved = launch::validate_configuration(&e, "resolve").unwrap();
+        assert_eq!(resolved.source_sha, raw["source_sha"].as_str().unwrap());
+        assert_eq!(resolved.builder_sha, "b".repeat(40));
     }
 }
 #[test]

@@ -198,16 +198,18 @@ pub fn validate_configuration(env: &Environment, command: &str) -> Result<Reques
     if command == "verify-ios" && (!request.build_only || request.ios_action != "skip") {
         return Err("verify-ios requires unsigned build-only request");
     }
+    if command != "agent-run" && request.builder_sha.is_empty() {
+        request.builder_sha = required(env, "GITHUB_SHA")?.to_owned();
+    }
+    request.resolve_from(env)?;
     if !request.build_only {
         if request.builder_sha != required(env, "GITHUB_SHA")? {
             return Err("Requested builder differs from workflow revision");
         }
-        if target == "resolve" {
-            crate::input::validate_approval(env, &request.source_sha, &request.builder_sha)?;
-        } else if env.get("RESOLVED_SOURCE_SHA").map(String::as_str)
-            != Some(request.source_sha.as_str())
-        {
-            return Err("Full release source differs from approval resolver");
+        // GitHub's enforced execution policy authorizes the operator. The
+        // resolver freezes main (or an explicit ancestor) once for every job.
+        if target != "resolve" && required(env, "RESOLVED_SOURCE_SHA")? != request.source_sha {
+            return Err("Full release source differs from resolver");
         }
         if target != "resolve" {
             let config = crate::json::parse(required(env, "BUILD_CONFIG")?.as_bytes())?;
@@ -221,7 +223,6 @@ pub fn validate_configuration(env: &Environment, command: &str) -> Result<Reques
             required(env, "STORAGE_CONFIG")?;
         }
     }
-    request.resolve_from(env)?;
     if target != "resolve" && request.source_sha.is_empty() {
         return Err("Source revision must be resolved before building");
     }
@@ -390,6 +391,27 @@ fn seal(temp: &Path, env: &Environment) {
 }
 pub fn run(command: &str) -> Result<()> {
     let mut env: Environment = std::env::vars().collect();
+    if command == "validate-request" {
+        if std::env::args().len() != 2 {
+            return Err("Unexpected native release arguments");
+        }
+        validate_authority(&env)?;
+        let request = Request::parse(required(&env, "RELEASE_REQUEST")?)?;
+        let builder = required(&env, "GITHUB_SHA")?;
+        if !request.builder_sha.is_empty() && request.builder_sha != builder {
+            return Err("Requested builder differs from workflow revision");
+        }
+        // No source credentials are used here. Empty source selects main in
+        // the subsequent resolver; supplied SHAs retain ancestry validation.
+        write_outputs(
+            &env,
+            &[
+                ("source_sha", &request.source_sha),
+                ("builder_sha", builder),
+            ],
+        )?;
+        return Ok(());
+    }
     if command == "approve-source" || command == "agent-source" {
         if std::env::args().len() != 2 {
             return Err("Unexpected native release arguments");
