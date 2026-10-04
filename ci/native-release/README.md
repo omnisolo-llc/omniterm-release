@@ -6,11 +6,14 @@ application release implementation stays in the private source repository.
 
 ## Commands
 
-- `bash ci/native-release/run.sh approve-source`: validate protected requested,
-  approved and executing source/builder pins, then append only validated outputs.
-- `bash ci/native-release/run.sh resolve`: fetch the canonical reviewed branch,
-  check ancestry, resolve the requested revision/defaults and export the UTC
-  workflow identifier. Full releases require protected source/builder approval.
+- `bash ci/native-release/run.sh validate-request`: validate the canonical workflow,
+  optional source SHA and executing builder without source credentials or manual
+  SHA variables. GitHub's enforced execution policy authorizes release operators.
+- `bash ci/native-release/run.sh approve-source`: retained legacy compatibility
+  command and parity tests; the automated release workflow no longer calls it.
+- `bash ci/native-release/run.sh resolve`: fetch canonical private main, select its
+  latest commit or an explicitly supplied ancestor, and export one frozen source
+  identity and UTC workflow identifier. The source gitlink must match the builder.
 - `bash ci/native-release/run.sh run`: acquire the approved source closure,
   verify committed bytes/modes/paths/configuration/gitlinks, consume checkout
   credentials, compile and test the locked private CLI, then dispatch the stage.
