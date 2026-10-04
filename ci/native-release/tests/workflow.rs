@@ -422,6 +422,15 @@ fn permissions_environments_and_all_task_inputs_keep_exact_step_scope() {
                 env["OMNITERM_VPN_PROVIDER_PUBLIC_KEY"].as_str(),
                 Some("${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}")
             );
+            for key in [
+                "OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64",
+                "OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64",
+            ] {
+                assert_eq!(
+                    env[key].as_str(),
+                    Some(format!("${{{{ vars.{key} }}}}").as_str())
+                );
+            }
         } else {
             assert!(
                 env["SOURCE_SUBMODULE_TOKEN"].is_null()
