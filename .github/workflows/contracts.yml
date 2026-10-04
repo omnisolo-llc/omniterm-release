@@ -29,12 +29,22 @@ jobs:
           --policy ci/standard-runner-policy.json
 
   contracts:
+    # Preserve the required check contexts during the runner upgrade. The
+    # Windows check keeps its historical name; the actual runner is 2025.
+    name: contracts (${{ matrix.check }})
     needs: policy
     strategy:
       fail-fast: false
       max-parallel: 3
       matrix:
         runner: [ubuntu-24.04, windows-2025, macos-26]
+        include:
+          - runner: ubuntu-24.04
+            check: ubuntu-24.04
+          - runner: windows-2025
+            check: windows-2022
+          - runner: macos-26
+            check: macos-26
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
