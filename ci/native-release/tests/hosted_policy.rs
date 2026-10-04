@@ -384,13 +384,19 @@ fn contracts_use_strict_policy_before_downstream_allocation() {
 #[test]
 fn standard_runner_upgrade_preserves_required_check_contexts() {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap().parent().unwrap();
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
     let document: Value = serde_yaml::from_slice(
         &fs::read(repository.join(".github/workflows/contracts.yml")).unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
     let job = &document["jobs"]["contracts"];
-    assert_eq!(job["name"], "contracts (${{ matrix.check }})",
-        "changing runner labels must not strand the existing required checks");
+    assert_eq!(
+        job["name"], "contracts (${{ matrix.check }})",
+        "changing runner labels must not strand the existing required checks"
+    );
     assert_eq!(job["runs-on"], "${{ matrix.runner }}");
     let includes = job["strategy"]["matrix"]["include"].as_array().unwrap();
     let expected = [
@@ -400,12 +406,20 @@ fn standard_runner_upgrade_preserves_required_check_contexts() {
     ];
     assert_eq!(includes.len(), expected.len());
     for (check, runner) in expected {
-        assert_eq!(includes.iter().filter(|row|
-            row["check"] == check && row["runner"] == runner).count(), 1);
+        assert_eq!(
+            includes
+                .iter()
+                .filter(|row| row["check"] == check && row["runner"] == runner)
+                .count(),
+            1
+        );
     }
     assert_eq!(job["needs"], "policy");
-    assert!(job["steps"].as_array().unwrap().iter().any(|step|
-        step["run"].as_str().is_some_and(|text| text.contains("bash ci/test-native-release.sh"))));
+    assert!(job["steps"].as_array().unwrap().iter().any(|step| {
+        step["run"]
+            .as_str()
+            .is_some_and(|text| text.contains("bash ci/test-native-release.sh"))
+    }));
 }
 
 #[cfg(unix)]

@@ -2,6 +2,7 @@
 # Build the small public launcher without exposing release secrets to Cargo.
 set -euo pipefail
 umask 077
+caller="$(pwd -P)"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 base="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 scratch="$(mktemp -d "$base/omni-native-launcher.XXXXXXXX")"
@@ -41,4 +42,7 @@ env -i PATH="$PATH" HOME="$native_scratch/home" RUSTUP_HOME="$rustup_home" \
   --bin omni-release-launcher --manifest-path "$manifest" \
   >>"$scratch/bootstrap.log" 2>&1 || failed
 # Only this reviewed executable receives the original protected step environment.
+# Compilation stays isolated above; caller-relative CLI inputs must retain the
+# same meaning they had at the workflow boundary.
+cd "$caller"
 "$scratch/target/release/omni-release-launcher" "$@"
