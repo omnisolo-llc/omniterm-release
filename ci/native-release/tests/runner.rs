@@ -208,6 +208,79 @@ if [[ -f omniterm-release/payload ]]; then /usr/bin/git -C omniterm-release remo
     }
 }
 #[test]
+fn actual_ci_dispatch_uses_distinct_request_and_cleans_privileged_environment() {
+    use omni_release_launcher::{ci_request::SourceCiRequest, launch::build_and_dispatch_ci};
+    let fixture = Fixture::new();
+    let cli = r#"fn main() {
+        use std::{env,fs,path::Path};
+        let args:Vec<_>=env::args().skip(1).collect();
+        assert_eq!(args.len(),7);assert_eq!(args[0],"ci");assert_eq!(args[1],"--root");assert_eq!(args[3],"--work-dir");assert_eq!(args[5],"--request");
+        let value=fs::read_to_string(&args[6]).unwrap();assert_eq!(value,env::var("SOURCE_CI_REQUEST").unwrap());
+        assert!(!value.contains("version") && !value.contains("ios_action"));
+        assert_eq!(env::var("CARGO_BUILD_JOBS").unwrap(),"2");
+        for key in ["GH_TOKEN","GITHUB_TOKEN","PRIVATE_RELEASE_TOKEN","SOURCE_DEPLOY_KEY","SOURCE_METADATA_READ_TOKEN","SOURCE_SUBMODULE_TOKEN","SOURCE_SUBMODULE_DEPLOY_KEY_BASE64","GITHUB_OUTPUT","GITHUB_ENV","SIGNING_CONFIG","STORAGE_CONFIG","RELEASE_REQUEST","RUSTFLAGS","NODE_OPTIONS"] {assert!(env::var_os(key).is_none(),"{key}");}
+        fs::write(Path::new(&args[4]).join("synthetic-ci-observation"),value).unwrap();
+        println!("private synthetic CI output");
+    }"#;
+    fs::write(fixture.source.join("tools/release-cli/src/main.rs"), cli).unwrap();
+    git(&fixture.source, &["add", "tools/release-cli/src/main.rs"]);
+    git(
+        &fixture.source,
+        &["commit", "-qm", "CI environment fixture"],
+    );
+    let sha = git(&fixture.source, &["rev-parse", "HEAD"]);
+    git(
+        &fixture.source,
+        &[
+            "config",
+            "submodule.omniterm-release.url",
+            omni_release_launcher::source::PUBLIC_URL,
+        ],
+    );
+    git(
+        &fixture.source.join("omniterm-release"),
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            omni_release_launcher::source::PUBLIC_URL,
+        ],
+    );
+    let request=SourceCiRequest::parse(&json!({"identity":{"source_repository":"ql-owo-lp/omniterm","source_sha":sha,"builder_repository":"omnisolo-llc/omniterm-release","builder_sha":fixture.env["GITHUB_SHA"],"run_id":"42","attempt":"2"},"source_ref":"refs/heads/main","stage":"rust","shard_index":0,"shard_count":1})).unwrap();
+    let mut env = fixture.env.clone();
+    env.insert(
+        "SOURCE_METADATA_READ_TOKEN".into(),
+        "synthetic-private-read".into(),
+    );
+    let root = fixture.runner.join("ci-work");
+    fs::create_dir(&root).unwrap();
+    let mut log = fs::File::create(root.join("bootstrap.log")).unwrap();
+    build_and_dispatch_ci(&fixture.source, &root, &env, &request, &mut log).unwrap();
+    let observed = fs::read_to_string(root.join("release-work/synthetic-ci-observation")).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&observed).unwrap(),
+        serde_json::to_value(&request).unwrap()
+    );
+    assert!(
+        fs::read_to_string(root.join("bootstrap.log"))
+            .unwrap()
+            .contains("private synthetic CI output")
+    );
+    fs::write(
+        fixture.source.join("tools/release-cli/src/main.rs"),
+        "uncommitted changed source",
+    )
+    .unwrap();
+    let changed = fixture.runner.join("changed-ci-work");
+    fs::create_dir(&changed).unwrap();
+    let mut log = fs::File::create(changed.join("bootstrap.log")).unwrap();
+    assert!(build_and_dispatch_ci(&fixture.source, &changed, &env, &request, &mut log).is_err());
+    assert!(
+        !changed.join("build-home").exists(),
+        "changed source must fail before Cargo starts"
+    );
+}
+#[test]
 fn actual_protected_checkout_locked_build_and_dispatch_cover_every_release_target() {
     let fixture = Fixture::new();
     for target in RELEASE_TARGETS {

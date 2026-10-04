@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod ci_request;
 pub mod guards;
 pub mod input;
 pub mod json;

@@ -643,17 +643,59 @@ pub fn build_and_dispatch(
     command: &str,
     bootstrap: &mut fs::File,
 ) -> Result<()> {
+    build_native_stage(
+        src,
+        root,
+        env,
+        NativeStage::Release(request, command),
+        bootstrap,
+    )
+}
+
+/// The caller must establish fresh CI authority and acquire the exact source
+/// before entering this common byte-checked native compilation boundary.
+pub fn build_and_dispatch_ci(
+    src: &Path,
+    root: &Path,
+    env: &Environment,
+    request: &crate::ci_request::SourceCiRequest,
+    bootstrap: &mut fs::File,
+) -> Result<()> {
+    crate::ci_request::SourceCiRequest::parse(
+        &serde_json::to_value(request).map_err(|_| "Invalid CI request encoding")?,
+    )?;
+    if request.identity.builder_sha != required(env, "GITHUB_SHA")? {
+        return Err("CI builder differs from executing revision");
+    }
+    build_native_stage(src, root, env, NativeStage::Ci(request), bootstrap)
+}
+
+enum NativeStage<'a> {
+    Release(&'a Request, &'a str),
+    Ci(&'a crate::ci_request::SourceCiRequest),
+}
+fn build_native_stage(
+    src: &Path,
+    root: &Path,
+    env: &Environment,
+    stage: NativeStage<'_>,
+    bootstrap: &mut fs::File,
+) -> Result<()> {
+    let source_sha = match &stage {
+        NativeStage::Release(request, _) => request.source_sha.as_str(),
+        NativeStage::Ci(request) => request.identity.source_sha.as_str(),
+    };
     for name in ["identity", "known_hosts", "website-identity"] {
         if root.join(name).exists() {
             return Err("Checkout credential cleanup failed");
         }
     }
     let checkout = clean_environment(env);
-    source::verify(src, &request.source_sha, &checkout, false, 0)?;
+    source::verify(src, source_sha, &checkout, false, 0)?;
     source::verify_tools(src, &checkout)?;
     let frozen = crate::guards::Frozen::tree(&src.join("tools"), false)?;
     frozen.verify()?;
-    source::verify(src, &request.source_sha, &checkout, false, 0)?;
+    source::verify(src, source_sha, &checkout, false, 0)?;
     source::verify_tools(src, &checkout)?;
     let mut build = clean_environment(env);
     let rustup = env
@@ -727,7 +769,7 @@ pub fn build_and_dispatch(
     )?;
     frozen.verify()?;
     source::verify_tools(src, &checkout)?;
-    source::verify(src, &request.source_sha, &checkout, false, 0)?;
+    source::verify(src, source_sha, &checkout, false, 0)?;
     let work = root.join("release-work");
     directory(&work)?;
     let binary = root.join(if cfg!(windows) {
@@ -738,7 +780,10 @@ pub fn build_and_dispatch(
     if !fs::symlink_metadata(&binary).is_ok_and(|m| m.is_file() && !m.file_type().is_symlink()) {
         return Err("Native release executable missing");
     }
-    let mut task = task_environment(env);
+    let mut task = match &stage {
+        NativeStage::Release(_, _) => task_environment(env),
+        NativeStage::Ci(request) => crate::ci_request::ci_child_environment(env, request)?,
+    };
     for key in [
         "HOME",
         "CARGO_HOME",
@@ -748,20 +793,60 @@ pub fn build_and_dispatch(
     ] {
         task.insert(key.into(), build[key].clone());
     }
-    task.insert("RELEASE_REQUEST".into(), request.normalized()?);
+    let (arguments, timeout) = match &stage {
+        NativeStage::Release(request, command) => {
+            task.insert("RELEASE_REQUEST".into(), request.normalized()?);
+            task.insert(
+                "RELEASE_INTEGRATION_SOURCE_REPOSITORY".into(),
+                required(env, "SOURCE_REPOSITORY")?.into(),
+            );
+            task.insert(
+                "RELEASE_INTEGRATION_SOURCE_REF".into(),
+                format!("refs/heads/{}", required(env, "SOURCE_BRANCH")?),
+            );
+            let args = vec![
+                if *command == "agent-run" {
+                    "agent-run".into()
+                } else {
+                    "run".into()
+                },
+                "--root".into(),
+                src.to_string_lossy().into_owned(),
+                "--work-dir".into(),
+                work.to_string_lossy().into_owned(),
+            ];
+            let timeout = match required(env, "RELEASE_TARGET")? {
+                "integration" => 21600,
+                "installation" => 10800,
+                _ => 10000,
+            };
+            (args, timeout)
+        }
+        NativeStage::Ci(request) => {
+            let request_path = work.join("ci-request.json");
+            let raw = serde_json::to_vec(request).map_err(|_| "Invalid CI request encoding")?;
+            private_file(&request_path, &raw)?;
+            task.insert("CARGO_BUILD_JOBS".into(), "2".into());
+            (
+                vec![
+                    "ci".into(),
+                    "--root".into(),
+                    src.to_string_lossy().into_owned(),
+                    "--work-dir".into(),
+                    work.to_string_lossy().into_owned(),
+                    "--request".into(),
+                    request_path.to_string_lossy().into_owned(),
+                ],
+                10000,
+            )
+        }
+    };
     task.insert("SOURCE".into(), src.to_string_lossy().into_owned());
     task.insert(
         "PUBLIC_BUILDER_SHA".into(),
         required(env, "GITHUB_SHA")?.into(),
     );
-    task.insert(
-        "RELEASE_INTEGRATION_SOURCE_REPOSITORY".into(),
-        required(env, "SOURCE_REPOSITORY")?.into(),
-    );
-    task.insert(
-        "RELEASE_INTEGRATION_SOURCE_REF".into(),
-        format!("refs/heads/{}", required(env, "SOURCE_BRANCH")?),
-    );
+
     for (key, name) in [
         ("PRIVATE_BOOTSTRAP_LOG", "bootstrap.log"),
         ("PRIVATE_DIAGNOSTIC_LOG", "task.log"),
@@ -771,24 +856,10 @@ pub fn build_and_dispatch(
     }
     let outcome = process::run(
         &binary,
-        &[
-            if command == "agent-run" {
-                "agent-run".into()
-            } else {
-                "run".into()
-            },
-            "--root".into(),
-            src.to_string_lossy().into_owned(),
-            "--work-dir".into(),
-            work.to_string_lossy().into_owned(),
-        ],
+        &arguments,
         root,
         &task,
-        Duration::from_secs(match required(env, "RELEASE_TARGET")? {
-            "integration" => 21600,
-            "installation" => 10800,
-            _ => 10000,
-        }),
+        Duration::from_secs(timeout),
         Some(bootstrap),
     );
     if let Ok(meta) = fs::symlink_metadata(work.join("native-ios.log"))
@@ -801,6 +872,6 @@ pub fn build_and_dispatch(
     outcome?;
     frozen.verify()?;
     source::verify_tools(src, &checkout)?;
-    source::verify(src, &request.source_sha, &checkout, false, 0)?;
+    source::verify(src, source_sha, &checkout, false, 0)?;
     Ok(())
 }
