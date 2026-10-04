@@ -164,6 +164,8 @@ jobs:
         env:
           RELEASE_TARGET: integration
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
@@ -229,6 +231,8 @@ jobs:
         env:
           RELEASE_TARGET: ${{ matrix.target }}
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
@@ -294,6 +298,8 @@ jobs:
         env:
           RELEASE_TARGET: validate
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -358,6 +364,8 @@ jobs:
         env:
           RELEASE_TARGET: ${{ matrix.target }}
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -423,6 +431,8 @@ jobs:
         env:
           RELEASE_TARGET: windows
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -476,6 +486,8 @@ jobs:
         env:
           RELEASE_TARGET: ios
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -523,6 +535,8 @@ jobs:
         env:
           RELEASE_TARGET: package-signatures
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -570,6 +584,8 @@ jobs:
         env:
           RELEASE_TARGET: apple-testflight
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -655,6 +671,8 @@ jobs:
         env:
           RELEASE_TARGET: installation
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
@@ -729,6 +747,8 @@ jobs:
         env:
           RELEASE_TARGET: vpn-container
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           OMNI_VPN_E2E_KERNEL_MODULE_STATE: ${{ matrix.kernel_state }}
           OMNITERM_VPN_E2E_PROFILE_FILE: ${{ vars.OMNITERM_VPN_E2E_PROFILE_FILE }}
           OMNITERM_VPN_E2E_CLIENT_BASE_IMAGE: ${{ vars.OMNITERM_VPN_E2E_CLIENT_BASE_IMAGE }}
@@ -782,6 +802,8 @@ jobs:
         env:
           RELEASE_TARGET: ios-deliver
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -829,6 +851,8 @@ jobs:
         env:
           RELEASE_TARGET: publication-prepare
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
@@ -873,6 +897,8 @@ jobs:
         env:
           RELEASE_TARGET: managed-rtc-provider
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           MANAGED_RTC_PROVIDER_ENVIRONMENT_FILE: ${{ vars.MANAGED_RTC_PROVIDER_ENVIRONMENT_FILE }}
           MANAGED_RTC_IDENTITY_FIXTURE_FILE: ${{ vars.MANAGED_RTC_IDENTITY_FIXTURE_FILE }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
@@ -1001,6 +1027,8 @@ jobs:
         env:
           RELEASE_TARGET: external-tests
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           OMNI_EXTERNAL_PLATFORM: ${{ matrix.platform }}
           OMNI_EXTERNAL_CONFIG_FILE: ${{ vars[matrix.config_variable] }}
           OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_FILE: ${{ vars[matrix.candidate_guard_variable] }}
@@ -1071,6 +1099,8 @@ jobs:
         env:
           RELEASE_TARGET: external-windows-signing
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           OMNI_EXTERNAL_PLATFORM: windows-signing
           OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_FILE: ${{ vars.OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_FILE }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
@@ -1127,6 +1157,8 @@ jobs:
           RELEASE_TARGET: ios-submit
           RELEASE_IOS_DELIVERY_RESULT: ${{ needs.ios_delivery.result }}
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
@@ -1176,6 +1208,8 @@ jobs:
         env:
           RELEASE_TARGET: publish
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
