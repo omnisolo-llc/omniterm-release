@@ -78,7 +78,7 @@ jobs:
           persist-credentials: false
       - name: Verify pins against the requested source and current builder workflow
         id: approve
-        run: python3 ci/validate_release_source_approval.py
+        run: bash ci/native-release/run.sh approve-source
         env:
           APPROVED_RELEASE_SOURCE_SHA: ${{ vars.APPROVED_RELEASE_SOURCE_SHA }}
           APPROVED_RELEASE_BUILDER_SHA: ${{ vars.APPROVED_RELEASE_BUILDER_SHA }}
@@ -106,7 +106,7 @@ jobs:
           persist-credentials: false
       - name: Resolve source revision and defaults
         id: resolve
-        run: python3 ci/bootstrap.py
+        run: bash ci/native-release/run.sh resolve
         env:
           RELEASE_TARGET: resolve
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
@@ -160,10 +160,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Execute genuine reviewed application journeys and retain private evidence
-        run: python ci/bootstrap.py
+        run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: integration
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
@@ -174,6 +176,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           OMNI_INTEGRATION_PLATFORM: ${{ matrix.platform }}
@@ -217,15 +220,19 @@ jobs:
         with:
           distribution: temurin
           java-version: '17.0.20+101'
+      - name: Install pinned native verification toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy --no-self-update
       - name: Verify public launcher contracts
         run: |
-          python -m unittest discover -s ci -p 'test_*.py'
+          bash ci/test-native-release.sh
           node --test ci/test_sealed_diagnostics.cjs
       - name: Verify build without publishing
-        run: python ci/bootstrap.py
+        run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: ${{ matrix.target }}
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
@@ -236,6 +243,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
           WINDOWS_PREVIEW_OUTPUT_DIR: ${{ inputs.preview_windows_self_sign && matrix.target == 'windows' && format('{0}/windows-preview', runner.temp) || '' }}
       - name: Retain self-signed Windows evaluation build
@@ -278,21 +286,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake libicu-dev
       - name: Verify public launcher contracts
-        run: python3 -m unittest discover -s ci -p 'test_*.py'
+        run: bash ci/test-native-release.sh
       - name: Verify self-hosted relay package locks and suites
         run: |
           npm ci --prefix relay/native
           node --test --test-concurrency=1 ci/test_native_relay_contract.mjs
           npm ci --prefix relay/moq
           npm test --prefix relay/moq
-      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
-        with:
-          python-version: '3.14'
       - name: Validate reviewed source revision
-        run: python3 ci/bootstrap.py
+        run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: validate
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -304,6 +311,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
@@ -352,10 +360,12 @@ jobs:
           distribution: temurin
           java-version: '17.0.20+101'
       - name: Execute reviewed release task
-        run: python ci/bootstrap.py
+        run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: ${{ matrix.target }}
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -367,6 +377,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           SIGNING_CONFIG: ${{ matrix.target == 'macos' && secrets.MACOS_SIGNING_CONFIG || matrix.target == 'android' && secrets.ANDROID_SIGNING_CONFIG || '' }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
@@ -416,10 +427,12 @@ jobs:
           if (-not ((dotnet --list-runtimes) -match '^Microsoft\.NETCore\.App 8\.')) { throw '.NET 8 runtime is required for Artifact Signing' }
           "OMNI_WINDOWS_ARTIFACT_SIGNING_DLIB=$dlib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Execute reviewed Windows release task
-        run: python ci/bootstrap.py
+        run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: windows
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -431,6 +444,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           SIGNING_CONFIG: ${{ secrets.WINDOWS_SIGNING_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
@@ -468,10 +482,12 @@ jobs:
         with:
           node-version: '24.21.0'
       - name: Execute reviewed release task
-        run: python3 ci/bootstrap.py
+        run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: ios
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -483,6 +499,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
@@ -514,10 +531,12 @@ jobs:
         with:
           node-version: '24.21.0'
       - name: Execute reviewed release task
-        run: python3 ci/bootstrap.py
+        run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: package-signatures
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -529,6 +548,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           SIGNING_CONFIG: ${{ secrets.PACKAGE_SIGNING_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
@@ -560,10 +580,12 @@ jobs:
         with:
           node-version: '24.21.0'
       - name: Execute reviewed release task
-        run: python3 ci/bootstrap.py
+        run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: apple-testflight
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -575,6 +597,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
@@ -644,10 +667,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Install exact candidate and retain actual private OS evidence
-        run: python ci/bootstrap.py
+        run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: installation
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
@@ -658,6 +683,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           GH_TOKEN: ${{ github.token }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
@@ -717,10 +743,12 @@ jobs:
         env:
           OMNI_VPN_E2E_KERNEL_MODULE_STATE: ${{ matrix.kernel_state }}
       - name: Assemble candidate client image and execute VPN route and cutoff matrix
-        run: python ci/bootstrap.py
+        run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: vpn-container
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           OMNI_VPN_E2E_KERNEL_MODULE_STATE: ${{ matrix.kernel_state }}
           OMNITERM_VPN_E2E_PROFILE_FILE: ${{ vars.OMNITERM_VPN_E2E_PROFILE_FILE }}
           OMNITERM_VPN_E2E_CLIENT_BASE_IMAGE: ${{ vars.OMNITERM_VPN_E2E_CLIENT_BASE_IMAGE }}
@@ -738,6 +766,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           GH_TOKEN: ${{ github.token }}
@@ -769,10 +798,12 @@ jobs:
         with:
           node-version: '24.21.0'
       - name: Execute reviewed release task
-        run: python3 ci/bootstrap.py
+        run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: ios-deliver
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
@@ -784,6 +815,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
@@ -815,10 +847,12 @@ jobs:
         with:
           node-version: '24.21.0'
       - name: Prepare private candidate checkpoint without public mirroring
-        run: python3 ci/bootstrap.py
+        run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: publication-prepare
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
@@ -829,6 +863,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           GH_TOKEN: ${{ github.token }}
@@ -858,10 +893,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Execute live provider cases and store OIDC-attested evidence privately
-        run: python ci/bootstrap.py
+        run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: managed-rtc-provider
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           MANAGED_RTC_PROVIDER_ENVIRONMENT_FILE: ${{ vars.MANAGED_RTC_PROVIDER_ENVIRONMENT_FILE }}
           MANAGED_RTC_IDENTITY_FIXTURE_FILE: ${{ vars.MANAGED_RTC_IDENTITY_FIXTURE_FILE }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
@@ -874,6 +911,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
@@ -920,9 +958,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
-        with:
-          python-version: '3.14'
       - uses: ruby/setup-ruby@d697be2f83c6234b20877c3b5eac7a7f342f0d0c # v1.269.0
         if: matrix.platform == 'macos'
         with:
@@ -941,7 +976,7 @@ jobs:
           sudo -n true
           command -v gpgv >/dev/null || { echo 'gpgv is required to update the trusted Ubuntu package index' >&2; exit 1; }
           sudo -n apt-get update
-      - name: Provision Linux Python external-test host prerequisites
+      - name: Provision Linux native external-test host prerequisites
         if: matrix.platform == 'linux'
         run: |
           set -euo pipefail
@@ -956,12 +991,12 @@ jobs:
             libglib2.0-dev \
             openjdk-17-jdk-headless \
             pkg-config
-      - name: Verify Linux Python external-test host prerequisites
+      - name: Verify Linux native external-test host prerequisites
         if: matrix.platform == 'linux'
         run: |
           set -euo pipefail
           for tool in bash g++ x86_64-w64-mingw32-g++ x86_64-w64-mingw32-gcc \
-            gpg gpgconf gpgv java javac pkg-config python3 sha256sum; do
+            gpg gpgconf gpgv java javac pkg-config cargo rustc sha256sum; do
             command -v "$tool" >/dev/null || { echo "missing protected Python host prerequisite: $tool" >&2; exit 1; }
           done
           pkg-config --exists gio-unix-2.0
@@ -988,10 +1023,12 @@ jobs:
           done
           test "$found_inrelease" -eq 1
       - name: Execute exact external cases against real candidate and providers
-        run: python ci/bootstrap.py
+        run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: external-tests
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           OMNI_EXTERNAL_PLATFORM: ${{ matrix.platform }}
           OMNI_EXTERNAL_CONFIG_FILE: ${{ vars[matrix.config_variable] }}
           OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_FILE: ${{ vars[matrix.candidate_guard_variable] }}
@@ -1008,6 +1045,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           GH_TOKEN: ${{ matrix.platform == 'linux' && secrets.RELEASE_METADATA_READ_TOKEN || github.token }}
@@ -1057,10 +1095,12 @@ jobs:
           if (-not ((dotnet --list-runtimes) -match '^Microsoft\.NETCore\.App 8\.')) { throw '.NET 8 runtime is required' }
           "OMNI_WINDOWS_ARTIFACT_SIGNING_DLIB=$dlib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Execute only the protected Windows Azure signing case
-        run: python ci/bootstrap.py
+        run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: external-windows-signing
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           OMNI_EXTERNAL_PLATFORM: windows-signing
           OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_FILE: ${{ vars.OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_FILE }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
@@ -1073,6 +1113,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           SIGNING_CONFIG: ${{ secrets.WINDOWS_SIGNING_CONFIG }}
@@ -1111,11 +1152,13 @@ jobs:
         with:
           node-version: '24.21.0'
       - name: Verify external acceptance before actual Apple submission
-        run: python3 ci/bootstrap.py
+        run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: ios-submit
           RELEASE_IOS_DELIVERY_RESULT: ${{ needs.ios_delivery.result }}
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
@@ -1126,6 +1169,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
@@ -1160,10 +1204,12 @@ jobs:
         with:
           node-version: '24.21.0'
       - name: Execute reviewed release task
-        run: python3 ci/bootstrap.py
+        run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: publish
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
+          OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
@@ -1174,6 +1220,7 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           PRIVATE_RELEASE_TOKEN: ${{ secrets.PRIVATE_RELEASE_TOKEN }}

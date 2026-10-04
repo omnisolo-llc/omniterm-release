@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   native-agent:
-    if: github.ref == 'refs/heads/main'
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main'
     environment: downloads
     timeout-minutes: 120
     defaults:
@@ -53,35 +53,26 @@ jobs:
           printf 'OMNI_AGENT_WIX=%s/agent-wix/wix.exe\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Read the pinned agent source
         id: approved
-        run: |
-          python3 - <<'PY'
-          import json, os, pathlib, re
-          value = json.loads(pathlib.Path('ci/approved_agent_source.json').read_text())
-          assert set(value) == {'source_sha', 'source_branch', 'version'}
-          assert re.fullmatch('[0-9a-f]{40}', value['source_sha'])
-          assert re.fullmatch(r'release/omni-agent-[A-Za-z0-9.-]+', value['source_branch'])
-          assert re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', value['version'])
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
-              for key, data in value.items():
-                  stream.write(key + '=' + data + '\n')
-          PY
+        run: bash ci/native-release/run.sh agent-source
       - name: Build actual private source on the matching native runner
-        run: python3 ci/bootstrap.py
+        run: bash ci/native-release/run.sh agent-run
         env:
           RELEASE_TARGET: ${{ matrix.target }}
-          RELEASE_REQUEST: '{"build_only":true,"source_sha":"${{ steps.approved.outputs.source_sha }}","version":"${{ steps.approved.outputs.version }}","build_number":"1","ios_action":"skip"}'
+          RELEASE_REQUEST: '{"build_only":true,"source_sha":"${{ steps.approved.outputs.source_sha }}","version":"${{ steps.approved.outputs.version }}","build_number":"1","ios_action":"skip","automatic_release":false,"include_selfhost":true}'
           RESOLVED_SOURCE_SHA: ${{ steps.approved.outputs.source_sha }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ steps.approved.outputs.source_branch }}
           SOURCE_ENTRYPOINT: scripts/release/agent_entrypoint.py
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.OMNI_AGENT_DIAGNOSTICS_PUBLIC_KEY }}
           OMNI_AGENT_PLATFORM: ${{ matrix.platform }}
           OMNI_AGENT_OUTPUT: ${{ runner.temp }}/agent-release
       - name: Require every platform package and verify exact output hashes
         run: |
-          python3 ci/verify_agent_handoff.py --directory "$RUNNER_TEMP/agent-release" \
+          bash ci/native-release/run.sh verify-agent-handoff --directory "$RUNNER_TEMP/agent-release" \
             --version '${{ steps.approved.outputs.version }}' --platform '${{ matrix.platform }}'
       - name: Retain the complete native distribution and integrity manifest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
