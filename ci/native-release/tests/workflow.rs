@@ -1035,6 +1035,30 @@ fn release_defaults_and_protected_approval_documentation_remain_explicit() {
     }
     assert!(!agent.contains("Only the four actual compiled binaries"));
 }
+fn linux_fixture_section(docs: &str) -> Option<String> {
+    // Documentation text comparisons are line-ending agnostic. Source
+    // verification continues to hash raw bytes in its separate native tests.
+    docs.replace("\r\n", "\n")
+        .split("Linux requires\n")
+        .nth(1)?
+        .split("Set `OMNI_EXTERNAL_CONFIG_LINUX.fixtures.live_share_provider_environment_file`")
+        .next()
+        .map(str::to_owned)
+}
+#[test]
+fn fixture_documentation_contract_accepts_lf_and_crlf_without_weakening_fields() {
+    let lf = read("README.md").replace("\r\n", "\n");
+    let crlf = lf.replace('\n', "\r\n");
+    let expected = linux_fixture_section(&lf).expect("declared provider section");
+    assert!(
+        linux_fixture_section(&crlf).as_deref() == Some(expected.as_str()),
+        "document line endings changed the required fixture section"
+    );
+    assert!(expected.contains("`live_share_provider_environment_file`"));
+    assert!(expected.contains("`production_oidc_environment_file`"));
+    assert!(linux_fixture_section("No Linux fixture contract").is_none());
+}
+
 #[test]
 fn linux_fixture_docs_keep_strict_separate_provider_and_oidc_contracts() {
     let docs = read("README.md");
@@ -1075,13 +1099,7 @@ fn linux_fixture_docs_keep_strict_separate_provider_and_oidc_contracts() {
     ] {
         assert!(docs.contains(text), "{text}");
     }
-    let fixtures = docs
-        .split("Linux requires\n")
-        .nth(1)
-        .unwrap()
-        .split("Set `OMNI_EXTERNAL_CONFIG_LINUX.fixtures.live_share_provider_environment_file`")
-        .next()
-        .unwrap();
+    let fixtures = linux_fixture_section(&docs).expect("Linux fixture documentation");
     for field in [
         "`live_share_provider_environment_file`",
         "`production_oidc_environment_file`",
