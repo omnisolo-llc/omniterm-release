@@ -14,12 +14,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  policy:
+    if: github.repository == 'omnisolo-llc/omniterm-release'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Enforce standard-runner policy before allocating the contracts matrix
+        run: >-
+          bash ci/native-release/run.sh audit-runners
+          --workflows .github/workflows/contracts.yml
+          --policy ci/standard-runner-policy.json
+
   contracts:
+    needs: policy
     strategy:
       fail-fast: false
       max-parallel: 3
       matrix:
-        runner: [ubuntu-24.04, windows-2022, macos-26]
+        runner: [ubuntu-24.04, windows-2025, macos-26]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
@@ -29,6 +44,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
+          package-manager-cache: false
       - name: Test launcher and encryption contracts without credentials
         shell: bash
         run: |
@@ -38,6 +54,7 @@ jobs:
           npm test --prefix relay/cloudflare
 
   first-party-moq:
+    needs: policy
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -47,6 +64,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24.21.0'
+          package-manager-cache: false
       - name: Install native HTTP/3 build prerequisites
         run: |
           sudo apt-get update
@@ -57,6 +75,7 @@ jobs:
           npm test --prefix relay/moq
 
   native-relay-contract:
+    needs: policy
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -66,6 +85,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24.21.0'
+          package-manager-cache: false
       - name: Test the self-hosted native relay package contract
         run: |
           npm ci --prefix relay/native

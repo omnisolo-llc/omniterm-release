@@ -22,7 +22,7 @@ sha2 = "=0.10.9"
 libc = "=0.2.186"
 signal-hook = "=0.3.18"
 
-[dev-dependencies]
+# Used by the bounded offline runner-policy audit and workflow contract tests.
 serde_yaml = "=0.9.34"
 
 [target.'cfg(windows)'.dependencies]

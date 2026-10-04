@@ -884,7 +884,7 @@ fn pinned_actions_sdk_versions_and_real_relay_suites_remain_required() {
             .iter()
             .map(|v| v.as_str().unwrap())
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from(["ubuntu-24.04", "windows-2022", "macos-26"])
+        BTreeSet::from(["ubuntu-24.04", "windows-2025", "macos-26"])
     );
     for (job, commands) in [
         (
