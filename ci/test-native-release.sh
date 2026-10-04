@@ -14,8 +14,14 @@ done
 export PATH="$guard/bin:$PATH"
 export CARGO_BUILD_JOBS=1
 check() {
+  local phase="$1"
+  shift
+  printf 'Native contract phase: %s\n' "$phase"
   if ! "$@" >>"$guard/bootstrap.log" 2>&1; then
-    echo 'Native contract check failed; compiler and test output was confined to private diagnostics.' >&2
+    printf 'Native contract failure phase: %s\n' "$phase" >&2
+    find "$here/native-release/src" "$here/native-release/tests" -type f -name '*.rs' -exec cat {} + > "$guard/public-identifiers.rs"
+    awk -f "$here/native-failure-summary.awk" "$guard/public-identifiers.rs" "$guard/bootstrap.log" >&2
+    echo 'Native contract check failed; raw compiler and test output remains private.' >&2
     if [[ -n "${DIAGNOSTICS_PUBLIC_KEY:-}" && -n "${RUNNER_TEMP:-}" ]]; then
       touch "$guard/task.log"
       node "$here/seal_diagnostics.cjs" "$guard" "$RUNNER_TEMP/encrypted-diagnostics/diagnostics.sealed" >/dev/null 2>&1 || true
@@ -25,12 +31,12 @@ check() {
 }
 if ! rustup run 1.95.0 cargo fmt --version >>"$guard/bootstrap.log" 2>&1 \
   || ! rustup run 1.95.0 cargo clippy --version >>"$guard/bootstrap.log" 2>&1; then
-  check rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy --no-self-update
+  check toolchain rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy --no-self-update
 fi
-check cargo +1.95.0 --version
-check cargo +1.95.0 fmt --manifest-path "$manifest" --check
-check cargo +1.95.0 test --locked --manifest-path "$manifest" -- --test-threads=1
-check cargo +1.95.0 clippy --locked --all-targets --manifest-path "$manifest" -- -D warnings
+check version cargo +1.95.0 --version
+check format cargo +1.95.0 fmt --manifest-path "$manifest" --check
+check tests cargo +1.95.0 test --locked --manifest-path "$manifest" -- --test-threads=1
+check clippy cargo +1.95.0 clippy --locked --all-targets --manifest-path "$manifest" -- -D warnings
 sed -n '/^test result:/p' "$guard/bootstrap.log"
 if [[ -e "$OMNI_PYTHON_GUARD_LOG" ]]; then
   echo 'A native test invoked a forbidden Python tool.' >&2
