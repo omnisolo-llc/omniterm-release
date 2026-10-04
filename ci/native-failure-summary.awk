@@ -19,6 +19,11 @@ FNR == NR {
             print "Native contract failed test: " name
             emitted++
         }
+    } else if ($0 ~ /^Native boundary result: (orphan|timeout) (success|timeout|stream|start|group|resume|failed|other|escaped|clean)$/) {
+        if (!seen[$0]++) {
+            print $0
+            emitted++
+        }
     } else if ($0 ~ /^error\[E[0-9][0-9][0-9][0-9]\]:/) {
         code = substr($0, 7, 5)
         if (!seen[code]++) {

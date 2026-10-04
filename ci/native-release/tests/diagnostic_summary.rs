@@ -35,6 +35,30 @@ fn public_contract_summary_does_not_echo_private_output_or_unknown_identifiers()
     );
 }
 #[test]
+fn process_boundary_summary_accepts_only_closed_enumerations() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source = temporary.path().join("public.rs");
+    let log = temporary.path().join("output.log");
+    fs::write(&source, "fn boundary() {}\n").unwrap();
+    fs::write(&log, "Native boundary result: orphan timeout\nNative boundary result: timeout success\nNative boundary result: orphan /private/value\nNative boundary result: timeout started secret\n").unwrap();
+    let parser = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("native-failure-summary.awk");
+    let output = Command::new("awk")
+        .arg("-f")
+        .arg(parser)
+        .arg(source)
+        .arg(log)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Native boundary result: orphan timeout\nNative boundary result: timeout success\n"
+    );
+}
+#[test]
 fn failure_summary_is_bounded_and_has_no_raw_log_fallback() {
     let temporary = tempfile::tempdir().unwrap();
     let source = temporary.path().join("public.rs");

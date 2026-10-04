@@ -63,8 +63,27 @@ fn timeout_and_success_stop_all_descendants_even_if_their_pipes_close() {
             Duration::from_millis(500),
             None,
         );
+        let disposition = match &result {
+            Ok(_) => "success",
+            Err("Build command timed out") => "timeout",
+            Err("Build output stream did not close") => "stream",
+            Err("Required build tool could not start") => "start",
+            Err("Process-tree cleanup unavailable") => "group",
+            Err("Suspended process cannot resume") => "resume",
+            Err("Build command failed; inspect private diagnostics") => "failed",
+            Err(_) => "other",
+        };
+        println!("Native boundary result: {mode} {disposition}");
         assert_eq!(result.is_ok(), mode == "orphan");
         std::thread::sleep(Duration::from_millis(1200));
+        println!(
+            "Native boundary result: {mode} {}",
+            if temp.path().join("escaped").exists() {
+                "escaped"
+            } else {
+                "clean"
+            }
+        );
         assert!(
             !temp.path().join("escaped").exists(),
             "Descendant survived {mode}"
