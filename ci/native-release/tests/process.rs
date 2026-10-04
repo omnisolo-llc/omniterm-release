@@ -52,6 +52,25 @@ fn actual_child_output_and_failure_are_private_and_bounded() {
     );
 }
 #[test]
+fn exited_parent_cannot_leave_descendants_running_while_collecting_output() {
+    let temp = tempfile::tempdir().unwrap();
+    process::run(
+        child(),
+        &["orphan-pipes".into()],
+        temp.path(),
+        &Environment::new(),
+        Duration::from_secs(5),
+        None,
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(
+        !temp.path().join("escaped").exists(),
+        "output collection must not extend a descendant's authority after its parent exits"
+    );
+}
+
+#[test]
 fn timeout_and_success_stop_all_descendants_even_if_their_pipes_close() {
     for mode in ["orphan", "timeout"] {
         let temp = tempfile::tempdir().unwrap();

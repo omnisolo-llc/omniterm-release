@@ -68,14 +68,24 @@ fn stop_group(child: &mut std::process::Child) {
 }
 struct ChildGuard {
     child: std::process::Child,
+    stopped: bool,
     #[cfg(windows)]
     job: WindowsJob,
 }
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
+impl ChildGuard {
+    fn stop(&mut self) {
+        if self.stopped {
+            return;
+        }
         #[cfg(windows)]
         self.job.stop();
         stop_group(&mut self.child);
+        self.stopped = true;
+    }
+}
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 #[cfg(windows)]
@@ -183,6 +193,7 @@ pub fn run(
     };
     let mut guard = ChildGuard {
         child,
+        stopped: false,
         #[cfg(windows)]
         job,
     };
@@ -218,6 +229,9 @@ pub fn run(
         }
         thread::sleep(Duration::from_millis(25));
     };
+    // Parent completion ends the whole invocation's authority. Inherited pipes
+    // must not keep descendants alive while output collectors await EOF.
+    guard.stop();
     let out = stdout.recv_timeout(Duration::from_secs(2));
     let err = stderr.recv_timeout(Duration::from_secs(2));
     if out.is_err() || err.is_err() {

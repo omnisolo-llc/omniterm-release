@@ -27,6 +27,15 @@ fn main() {
             std::thread::sleep(Duration::from_secs(1));
             fs::write("escaped", "must not survive").unwrap();
         }
+        "orphan-pipes" => {
+            let _descendant = Command::new(std::env::current_exe().unwrap())
+                .arg("descendant")
+                .stdin(Stdio::null())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap();
+        }
         "orphan" | "timeout" => {
             let mut descendant = Command::new(std::env::current_exe().unwrap())
                 .arg("descendant")
