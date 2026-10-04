@@ -233,7 +233,15 @@ class ReleaseMatrixTests(unittest.TestCase):
         self.assertIn('RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}', producer)
         launcher = Path(bootstrap_tests.b.__file__).read_text()
         self.assertIn("env['PUBLIC_BUILDER_SHA'] = required(env, 'GITHUB_SHA')", launcher)
-        self.assertIn('task_env = private_task_environment(env, submodule_token)', launcher)
+        import ast
+        handoffs = [node for node in ast.walk(ast.parse(launcher))
+                    if isinstance(node, ast.Call)
+                    and ast.unparse(node.func) == 'private_task_environment']
+        self.assertEqual(len(handoffs), 1)
+        self.assertEqual([ast.unparse(arg) for arg in handoffs[0].args],
+                         ['env', 'submodule_token'])
+        self.assertEqual({kw.arg: ast.unparse(kw.value) for kw in handoffs[0].keywords},
+                         {'submodule_deploy_key_base64': 'submodule_deploy_key_base64'})
         task_env = bootstrap_tests.b.private_task_environment({'PUBLIC_BUILDER_SHA': 'a' * 40}, None)
         self.assertEqual(task_env['PUBLIC_BUILDER_SHA'], 'a' * 40)
         self.assertIn('STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}', producer)

@@ -1,0 +1,806 @@
+use crate::{
+    Environment, Result, clean_environment,
+    input::{Request, validate_authority},
+    process, source,
+};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+pub fn checkout_failure(path: &Path) -> &'static str {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = crate::guards::open_regular(path, 64 * 1024 * 1024) else {
+        return "unclassified";
+    };
+    let Ok(info) = file.metadata() else {
+        return "unclassified";
+    };
+    if file
+        .seek(SeekFrom::Start(info.len().saturating_sub(65536)))
+        .is_err()
+    {
+        return "unclassified";
+    }
+    let mut bytes = Vec::new();
+    if file.take(65536).read_to_end(&mut bytes).is_err() {
+        return "unclassified";
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    for (category, patterns) in [
+        (
+            "host-key-verification",
+            vec!["Host key verification failed", "host key is known"],
+        ),
+        (
+            "checkout-key-format",
+            vec!["invalid format", "error in libcrypto"],
+        ),
+        (
+            "checkout-authentication",
+            vec!["Permission denied (publickey)", "Repository not found"],
+        ),
+        (
+            "checkout-network",
+            vec![
+                "Could not resolve hostname",
+                "Connection timed out",
+                "Connection refused",
+            ],
+        ),
+        (
+            "source-reference",
+            vec!["couldn't find remote ref", "Not a valid object name"],
+        ),
+    ] {
+        if patterns.iter().any(|p| text.contains(p)) {
+            return category;
+        }
+    }
+    "unclassified"
+}
+pub fn diagnostic_phase(path: &Path) -> String {
+    use std::io::Read;
+    let Ok(mut file) = crate::guards::open_regular(path, 512) else {
+        return String::new();
+    };
+    let mut bytes = Vec::new();
+    if file.read_to_end(&mut bytes).is_err() {
+        return String::new();
+    }
+    let Ok(value) = crate::json::parse(&bytes) else {
+        return String::new();
+    };
+    let stage = value["stage"].as_str().unwrap_or("");
+    if ![
+        "source-check",
+        "rust-toolchain",
+        "flutter-sdk",
+        "system-dependencies",
+        "android-sdk",
+        "package-resolution",
+        "application-build",
+        "lockfile-check",
+        "complete",
+    ]
+    .contains(&stage)
+    {
+        return String::new();
+    }
+    let mut result = format!("Last completed/attempted phase: {stage}\n");
+    if let Some(categories) = value["diagnostics"].as_array() {
+        for category in categories
+            .iter()
+            .take(6)
+            .filter_map(serde_json::Value::as_str)
+        {
+            if [
+                "android-kotlin-plugin",
+                "android-sdk-level",
+                "android-java-version",
+                "android-namespace",
+                "android-apk-output",
+                "dependency-resolution",
+                "windows-visual-studio",
+                "cmake-minimum-version",
+                "native-build-hook",
+                "rust-compilation",
+                "native-linker",
+                "dart-compilation",
+                "windows-symlinks",
+                "missing-native-library",
+                "network-download",
+                "android-ndk",
+            ]
+            .contains(&category)
+            {
+                result.push_str(&format!("Build diagnostic category: {category}\n"));
+            }
+        }
+    }
+    result
+}
+fn required<'a>(env: &'a Environment, key: &str) -> Result<&'a str> {
+    env.get(key)
+        .filter(|v| !v.is_empty())
+        .map(String::as_str)
+        .ok_or("Missing protected native release configuration")
+}
+/// Protected configuration is scoped by workflow steps. Only named protocol inputs cross.
+pub fn task_environment(parent: &Environment) -> Environment {
+    let mut env = clean_environment(parent);
+    for (key, value) in parent {
+        if matches!(
+            key.as_str(),
+            "RELEASE_TARGET"
+                | "RELEASE_REQUEST"
+                | "SOURCE"
+                | "SOURCE_REPOSITORY"
+                | "SOURCE_BRANCH"
+                | "SOURCE_ENTRYPOINT"
+                | "RESOLVED_SOURCE_SHA"
+                | "RESOLVED_VERSION"
+                | "RESOLVED_BUILD_NUMBER"
+                | "BUILD_CONFIG"
+                | "STORAGE_CONFIG"
+                | "SIGNING_CONFIG"
+                | "DOWNLOAD_CONFIG"
+                | "APPLE_CONFIG"
+                | "RELEASE_CONFIG"
+                | "GH_TOKEN"
+                | "GITHUB_TOKEN"
+                | "ACTIONS_ID_TOKEN_REQUEST_URL"
+                | "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+        ) || (key.starts_with("GITHUB_")
+            && ![
+                "GITHUB_ENV",
+                "GITHUB_OUTPUT",
+                "GITHUB_PATH",
+                "GITHUB_STATE",
+                "GITHUB_STEP_SUMMARY",
+            ]
+            .contains(&key.as_str()))
+            || key.starts_with("OMNI_")
+            || key.starts_with("OMNITERM_")
+            || key.starts_with("APP_STORE_CONNECT_")
+            || key.starts_with("RESOLVED_")
+            || matches!(
+                key.as_str(),
+                "RUNNER_TEMP"
+                    | "RELEASE_IOS_DELIVERY_RESULT"
+                    | "PRIVATE_RELEASE_TOKEN"
+                    | "WINDOWS_PREVIEW_OUTPUT_DIR"
+                    | "MANAGED_RTC_PROVIDER_ENVIRONMENT_FILE"
+                    | "MANAGED_RTC_IDENTITY_FIXTURE_FILE"
+            )
+        {
+            env.insert(key.clone(), value.clone());
+        }
+    }
+    env
+}
+pub fn validate_configuration(env: &Environment, command: &str) -> Result<Request> {
+    if command == "agent-run" {
+        crate::agent::validate_authority(env)?;
+    } else {
+        validate_authority(env)?;
+    }
+    let target = required(env, "RELEASE_TARGET")?;
+    if (command == "resolve" && target != "resolve")
+        || (command == "verify-ios" && target != "ios")
+        || (command == "run" && target == "resolve")
+    {
+        return Err("Native workflow target mismatch");
+    }
+    let mut request = Request::parse(required(env, "RELEASE_REQUEST")?)?;
+    request.validate_target(target)?;
+    if command == "verify-ios" && (!request.build_only || request.ios_action != "skip") {
+        return Err("verify-ios requires unsigned build-only request");
+    }
+    if !request.build_only {
+        if request.builder_sha != required(env, "GITHUB_SHA")? {
+            return Err("Requested builder differs from workflow revision");
+        }
+        if target == "resolve" {
+            crate::input::validate_approval(env, &request.source_sha, &request.builder_sha)?;
+        } else if env.get("RESOLVED_SOURCE_SHA").map(String::as_str)
+            != Some(request.source_sha.as_str())
+        {
+            return Err("Full release source differs from approval resolver");
+        }
+        if target != "resolve" {
+            let config = crate::json::parse(required(env, "BUILD_CONFIG")?.as_bytes())?;
+            if config
+                .get("OMNI_ENABLE_VPN")
+                .and_then(serde_json::Value::as_str)
+                != Some("true")
+            {
+                return Err("Full releases require OMNI_ENABLE_VPN=true");
+            }
+            required(env, "STORAGE_CONFIG")?;
+        }
+    }
+    request.resolve_from(env)?;
+    if target != "resolve" && request.source_sha.is_empty() {
+        return Err("Source revision must be resolved before building");
+    }
+    if !request.builder_sha.is_empty() && request.builder_sha != required(env, "GITHUB_SHA")? {
+        return Err("Requested builder does not match workflow revision");
+    }
+    required(env, "SOURCE_DEPLOY_KEY")?;
+    required(env, "SOURCE_KNOWN_HOSTS")?;
+    Ok(request)
+}
+pub fn write_outputs(env: &Environment, values: &[(&str, &str)]) -> Result<()> {
+    let path = Path::new(required(env, "GITHUB_OUTPUT")?);
+    let before = fs::symlink_metadata(path).map_err(|_| "Workflow output unavailable")?;
+    if !before.is_file() || crate::guards::reparse(&before) {
+        return Err("Unsafe workflow output");
+    }
+    let mut options = fs::OpenOptions::new();
+    options.append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+        if before.nlink() != 1 {
+            return Err("Unsafe workflow output");
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|_| "Workflow output unavailable")?;
+    crate::guards::single_link(&file)?;
+    if !crate::guards::same(
+        &before,
+        &file.metadata().map_err(|_| "Workflow output unavailable")?,
+    ) {
+        return Err("Workflow output changed");
+    }
+    crate::guards::unchanged(&file, path)?;
+    for (key, value) in values {
+        if !key.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+            || value.contains(['\r', '\n', '\0'])
+        {
+            return Err("Unsafe workflow output value");
+        }
+        writeln!(file, "{key}={value}").map_err(|_| "Workflow output write failed")?;
+    }
+    Ok(())
+}
+pub fn git_ssh_candidates(git: &Path) -> Vec<PathBuf> {
+    git.ancestors()
+        .skip(1)
+        .map(|p| p.join("usr/bin/ssh.exe"))
+        .collect()
+}
+pub fn ssh_executable(env: &Environment) -> Result<PathBuf> {
+    if cfg!(windows) {
+        for base in std::env::split_paths(required(env, "PATH")?) {
+            let git = base.join("git.exe");
+            if git.is_file() {
+                for path in git_ssh_candidates(&git) {
+                    if path.is_file() {
+                        return Ok(path);
+                    }
+                }
+            }
+        }
+        Err("Git SSH is unavailable")
+    } else {
+        Ok(PathBuf::from("/usr/bin/ssh"))
+    }
+}
+pub fn checkout_environment(env: &Environment, key: &Path, known: &Path) -> Result<Environment> {
+    let mut safe = clean_environment(env);
+    let ssh = ssh_executable(env)?;
+    safe.insert("GIT_SSH_COMMAND".into(),format!("{} -F {} -i {} -o IdentityAgent=none -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile={} -o GlobalKnownHostsFile={} -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ForwardAgent=no -o ClearAllForwardings=yes -o ConnectTimeout=30",quote(&ssh.to_string_lossy().replace('\\',"/")),crate::null_device(),quote(&key.to_string_lossy().replace('\\',"/")),quote(&known.to_string_lossy().replace('\\',"/")),crate::null_device()));
+    safe.insert("GIT_SSH_VARIANT".into(), "ssh".into());
+    Ok(safe)
+}
+pub fn decode_submodule_key(value: &str) -> Result<Vec<u8>> {
+    use base64::Engine;
+    if value.len() > 65536 {
+        return Err("Submodule key exceeds bound");
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|_| "Invalid submodule key encoding")?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| "Invalid submodule key format")?;
+    if bytes.len() > 32768
+        || !text.trim_start().starts_with("-----BEGIN ")
+        || !text.contains("PRIVATE KEY-----")
+    {
+        return Err("Invalid submodule key format");
+    }
+    Ok(format!("{}\n", text.replace("\r\n", "\n").trim()).into_bytes())
+}
+fn private_file(path: &Path, bytes: &[u8]) -> Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).read(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|_| "Cannot create private release file")?;
+    file.write_all(bytes)
+        .map_err(|_| "Cannot write private release file")?;
+    Ok(file)
+}
+fn directory(path: &Path) -> Result<()> {
+    fs::create_dir(path).map_err(|_| "Cannot create private release directory")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .map_err(|_| "Cannot secure release directory")?;
+    }
+    Ok(())
+}
+fn quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+fn git_args(args: &[&str]) -> Vec<String> {
+    args.iter().map(|s| (*s).into()).collect()
+}
+fn utf8(bytes: Vec<u8>) -> Result<String> {
+    String::from_utf8(bytes).map_err(|_| "Invalid native tool output")
+}
+fn seal(temp: &Path, env: &Environment) {
+    let Some(recipient) = env.get("DIAGNOSTICS_PUBLIC_KEY").filter(|v| !v.is_empty()) else {
+        return;
+    };
+    let Some(runner) = env.get("RUNNER_TEMP") else {
+        return;
+    };
+    let mut safe = clean_environment(env);
+    safe.insert("DIAGNOSTICS_PUBLIC_KEY".into(), recipient.clone());
+    let sealer = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("seal_diagnostics.cjs");
+    let target = Path::new(runner).join("encrypted-diagnostics/diagnostics.sealed");
+    let args = vec![
+        sealer.to_string_lossy().into_owned(),
+        temp.to_string_lossy().into_owned(),
+        target.to_string_lossy().into_owned(),
+    ];
+    if process::run(
+        Path::new("node"),
+        &args,
+        temp,
+        &safe,
+        Duration::from_secs(30),
+        None,
+    )
+    .is_err()
+    {
+        eprintln!("Encrypted native diagnostics could not be retained.");
+    }
+}
+pub fn run(command: &str) -> Result<()> {
+    let mut env: Environment = std::env::vars().collect();
+    if command == "approve-source" || command == "agent-source" {
+        if std::env::args().len() != 2 {
+            return Err("Unexpected native release arguments");
+        }
+        if command == "approve-source" {
+            let source = required(&env, "REQUESTED_SOURCE_SHA")?.to_ascii_lowercase();
+            let builder = required(&env, "REQUESTED_BUILDER_SHA")?;
+            crate::input::validate_approval(&env, &source, builder)?;
+            write_outputs(&env, &[("source_sha", &source), ("builder_sha", builder)])?;
+        } else {
+            let pin = crate::agent::approved_source()?;
+            write_outputs(
+                &env,
+                &[
+                    ("source_sha", &pin.source_sha),
+                    ("source_branch", &pin.source_branch),
+                    ("version", &pin.version),
+                ],
+            )?;
+        }
+        return Ok(());
+    }
+    if command == "verify-agent-handoff" {
+        let mut values = Environment::new();
+        let mut args = std::env::args().skip(2);
+        while let Some(key) = args.next() {
+            if !["--directory", "--version", "--platform"].contains(&key.as_str())
+                || values.contains_key(&key)
+            {
+                return Err("Invalid handoff arguments");
+            }
+            values.insert(key, args.next().ok_or("Missing handoff argument")?);
+        }
+        if values.len() != 3 {
+            return Err("Missing handoff arguments");
+        }
+        let count = crate::agent::verify_handoff(
+            Path::new(&values["--directory"]),
+            &values["--version"],
+            &values["--platform"],
+        )?;
+        println!(
+            "Verified {count} native package hashes; signing and installation remain separate gates."
+        );
+        return Ok(());
+    }
+    if command == "verify-source" {
+        let mut args = std::env::args().skip(2);
+        let mut values = Environment::new();
+        while let Some(key) = args.next() {
+            if !["--root", "--sha"].contains(&key.as_str()) || values.contains_key(&key) {
+                return Err("Invalid verification arguments");
+            }
+            let value = args.next().ok_or("Missing verification value")?;
+            values.insert(key, value);
+        }
+        if values.len() != 2 {
+            return Err("Expected --root and --sha");
+        }
+        source::verify_source(Path::new(&values["--root"]), &values["--sha"])?;
+        println!("Verified unchanged native source tree.");
+        return Ok(());
+    }
+    if !["resolve", "verify-ios", "run", "agent-run"].contains(&command) {
+        return Err("Unsupported native command; no legacy fallback");
+    }
+    if std::env::args().len() != 2 {
+        return Err("Unexpected native release arguments");
+    }
+    let mut request = validate_configuration(&env, command)?;
+    if command == "verify-ios" && !cfg!(target_os = "macos") {
+        return Err("Native iOS verification requires macOS");
+    }
+    let builder = required(&env, "GITHUB_SHA")?.to_owned();
+    let key_data = required(&env, "SOURCE_DEPLOY_KEY")?;
+    let hosts = required(&env, "SOURCE_KNOWN_HOSTS")?;
+    if key_data.len() > 32768
+        || !key_data.trim_start().starts_with("-----BEGIN ")
+        || !key_data.contains("PRIVATE KEY-----")
+        || hosts.len() > 65536
+    {
+        return Err("Invalid checkout credential format");
+    }
+    let runner = PathBuf::from(required(&env, "RUNNER_TEMP")?)
+        .canonicalize()
+        .map_err(|_| "Runner temporary directory missing")?;
+    let temp = tempfile::Builder::new()
+        .prefix("native-private-task-")
+        .tempdir_in(&runner)
+        .map_err(|_| "Private temporary directory unavailable")?;
+    let root = temp
+        .path()
+        .canonicalize()
+        .map_err(|_| "Private temporary directory unavailable")?;
+    let key = root.join("identity");
+    let known = root.join("known_hosts");
+    let website_key = root.join("website-identity");
+    let src = root.join("source");
+    directory(&src)?;
+    let mut bootstrap = private_file(&root.join("bootstrap.log"), b"")?;
+    let _ = private_file(&root.join("task.log"), b"")?;
+    private_file(
+        &key,
+        format!("{}\n", key_data.replace("\r\n", "\n").trim()).as_bytes(),
+    )?;
+    private_file(
+        &known,
+        format!("{}\n", hosts.replace("\r\n", "\n").trim()).as_bytes(),
+    )?;
+    let result = (|| {
+        let mut acquisition = checkout_environment(&env, &key, &known)?;
+        acquisition.insert(
+            "NATIVE_GIT_LOG".into(),
+            root.join("bootstrap.log").to_string_lossy().into_owned(),
+        );
+        let website = env
+            .get("SOURCE_SUBMODULE_DEPLOY_KEY_BASE64")
+            .filter(|s| !s.is_empty())
+            .map(|value| -> Result<Environment> {
+                private_file(&website_key, &decode_submodule_key(value)?)?;
+                checkout_environment(&env, &website_key, &known)
+            })
+            .transpose()?;
+        source::git(&src, &git_args(&["init", "-q"]), &acquisition)?;
+        source::git(
+            &src,
+            &git_args(&["config", "core.autocrlf", "false"]),
+            &acquisition,
+        )?;
+        source::git(
+            &src,
+            &git_args(&[
+                "remote",
+                "add",
+                "origin",
+                "ssh://git@ssh.github.com:443/ql-owo-lp/omniterm.git",
+            ]),
+            &acquisition,
+        )?;
+        println!("Native release phase: private-checkout");
+        source::git(
+            &src,
+            &git_args(&[
+                "-c",
+                "protocol.ssh.allow=always",
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "origin",
+                &format!(
+                    "+refs/heads/{}:refs/remotes/origin/reviewed",
+                    required(&env, "SOURCE_BRANCH")?
+                ),
+            ]),
+            &acquisition,
+        )?;
+        request.source_sha = source::resolve_revision(&src, &request.source_sha, &acquisition)?;
+        if command == "resolve" {
+            let timestamp = utf8(process::run(
+                Path::new("date"),
+                &git_args(&["-u", "+%Y%m%d%H%M"]),
+                &root,
+                &clean_environment(&env),
+                Duration::from_secs(15),
+                None,
+            )?)?
+            .trim()
+            .to_owned();
+            if timestamp.len() != 12 || !timestamp.bytes().all(|b| b.is_ascii_digit()) {
+                return Err("Invalid workflow timestamp");
+            }
+            write_outputs(
+                &env,
+                &[
+                    ("source_sha", &request.source_sha),
+                    ("version", &request.version),
+                    ("build_number", &request.build_number),
+                    ("workflow_id", &timestamp),
+                ],
+            )?;
+            println!("Native release inputs resolved.");
+            return Ok(());
+        }
+        source::git(
+            &src,
+            &git_args(&["checkout", "--quiet", "--detach", &request.source_sha]),
+            &acquisition,
+        )?;
+        println!("Native release phase: source-check");
+        let checkout = clean_environment(&env);
+        source::materialize_scoped(
+            &src,
+            &request.source_sha,
+            if command == "agent-run" {
+                None
+            } else {
+                Some(builder.as_str())
+            },
+            env.get("SOURCE_SUBMODULE_TOKEN")
+                .map(String::as_str)
+                .unwrap_or(""),
+            website.as_ref(),
+            &checkout,
+        )?;
+        fs::remove_file(&key)
+            .and_then(|_| fs::remove_file(&known))
+            .map_err(|_| "Checkout credential cleanup failed")?;
+        if website_key.exists() {
+            fs::remove_file(&website_key).map_err(|_| "Checkout credential cleanup failed")?;
+        }
+        for key in [
+            "SOURCE_DEPLOY_KEY",
+            "SOURCE_KNOWN_HOSTS",
+            "SOURCE_SUBMODULE_TOKEN",
+            "SOURCE_SUBMODULE_DEPLOY_KEY_BASE64",
+        ] {
+            env.remove(key);
+        }
+        {
+            use std::io::{Seek, SeekFrom};
+            bootstrap
+                .seek(SeekFrom::End(0))
+                .map_err(|_| "Private build log unavailable")?;
+        }
+        build_and_dispatch(&src, &root, &env, &request, command, &mut bootstrap)?;
+        println!("Native release task completed.");
+        Ok(())
+    })();
+    drop(bootstrap);
+    let _ = fs::remove_file(&key);
+    let _ = fs::remove_file(&known);
+    let _ = fs::remove_file(&website_key);
+    if result.is_err() {
+        eprintln!(
+            "Checkout category: {}",
+            checkout_failure(&root.join("bootstrap.log"))
+        );
+        eprint!("{}", diagnostic_phase(&root.join("status.json")));
+    }
+    if result.is_err() || command != "resolve" {
+        seal(&root, &env);
+    }
+    result
+}
+/// Called only after acquisition, ancestry and complete source closure verification.
+pub fn build_and_dispatch(
+    src: &Path,
+    root: &Path,
+    env: &Environment,
+    request: &Request,
+    command: &str,
+    bootstrap: &mut fs::File,
+) -> Result<()> {
+    for name in ["identity", "known_hosts", "website-identity"] {
+        if root.join(name).exists() {
+            return Err("Checkout credential cleanup failed");
+        }
+    }
+    let checkout = clean_environment(env);
+    source::verify(src, &request.source_sha, &checkout, false, 0)?;
+    source::verify_tools(src, &checkout)?;
+    let frozen = crate::guards::Frozen::tree(&src.join("tools"), false)?;
+    frozen.verify()?;
+    source::verify(src, &request.source_sha, &checkout, false, 0)?;
+    source::verify_tools(src, &checkout)?;
+    let mut build = clean_environment(env);
+    let rustup = env
+        .get("RUSTUP_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env.get("HOME").map(String::as_str).unwrap_or("")).join(".rustup")
+        });
+    if !rustup.is_absolute() {
+        return Err("Rust toolchain location unavailable");
+    }
+    for (name, part) in [
+        ("HOME", "build-home"),
+        ("CARGO_HOME", "cargo-home"),
+        ("CARGO_TARGET_DIR", "native-target"),
+    ] {
+        let location = root.join(part);
+        directory(&location)?;
+        build.insert(name.into(), location.to_string_lossy().into_owned());
+    }
+    build.insert("RUSTUP_HOME".into(), rustup.to_string_lossy().into_owned());
+    build.insert("CARGO_BUILD_JOBS".into(), "1".into());
+    let manifest = src.join("tools/release-cli/Cargo.toml");
+    if !manifest.is_file() || !src.join("tools/release-cli/Cargo.lock").is_file() {
+        return Err("Pinned source does not contain native release tooling");
+    }
+    println!("Native release phase: native-tool-build");
+    process::run(
+        Path::new("rustup"),
+        &git_args(&[
+            "toolchain",
+            "install",
+            "1.95.0",
+            "--profile",
+            "minimal",
+            "--no-self-update",
+        ]),
+        root,
+        &build,
+        Duration::from_secs(900),
+        Some(bootstrap),
+    )?;
+    process::run(
+        Path::new("cargo"),
+        &[
+            "+1.95.0".into(),
+            "test".into(),
+            "--locked".into(),
+            "--manifest-path".into(),
+            manifest.to_string_lossy().into_owned(),
+        ],
+        root,
+        &build,
+        Duration::from_secs(900),
+        Some(bootstrap),
+    )?;
+    process::run(
+        Path::new("cargo"),
+        &[
+            "+1.95.0".into(),
+            "build".into(),
+            "--locked".into(),
+            "--release".into(),
+            "--manifest-path".into(),
+            manifest.to_string_lossy().into_owned(),
+        ],
+        root,
+        &build,
+        Duration::from_secs(900),
+        Some(bootstrap),
+    )?;
+    frozen.verify()?;
+    source::verify_tools(src, &checkout)?;
+    source::verify(src, &request.source_sha, &checkout, false, 0)?;
+    let work = root.join("release-work");
+    directory(&work)?;
+    let binary = root.join(if cfg!(windows) {
+        "native-target/release/omni-release.exe"
+    } else {
+        "native-target/release/omni-release"
+    });
+    if !fs::symlink_metadata(&binary).is_ok_and(|m| m.is_file() && !m.file_type().is_symlink()) {
+        return Err("Native release executable missing");
+    }
+    let mut task = task_environment(env);
+    for key in [
+        "HOME",
+        "CARGO_HOME",
+        "CARGO_TARGET_DIR",
+        "RUSTUP_HOME",
+        "CARGO_BUILD_JOBS",
+    ] {
+        task.insert(key.into(), build[key].clone());
+    }
+    task.insert("RELEASE_REQUEST".into(), request.normalized()?);
+    task.insert("SOURCE".into(), src.to_string_lossy().into_owned());
+    task.insert(
+        "PUBLIC_BUILDER_SHA".into(),
+        required(env, "GITHUB_SHA")?.into(),
+    );
+    task.insert(
+        "RELEASE_INTEGRATION_SOURCE_REPOSITORY".into(),
+        required(env, "SOURCE_REPOSITORY")?.into(),
+    );
+    task.insert(
+        "RELEASE_INTEGRATION_SOURCE_REF".into(),
+        format!("refs/heads/{}", required(env, "SOURCE_BRANCH")?),
+    );
+    for (key, name) in [
+        ("PRIVATE_BOOTSTRAP_LOG", "bootstrap.log"),
+        ("PRIVATE_DIAGNOSTIC_LOG", "task.log"),
+        ("RELEASE_STATUS_FILE", "status.json"),
+    ] {
+        task.insert(key.into(), root.join(name).to_string_lossy().into_owned());
+    }
+    let outcome = process::run(
+        &binary,
+        &[
+            if command == "agent-run" {
+                "agent-run".into()
+            } else {
+                "run".into()
+            },
+            "--root".into(),
+            src.to_string_lossy().into_owned(),
+            "--work-dir".into(),
+            work.to_string_lossy().into_owned(),
+        ],
+        root,
+        &task,
+        Duration::from_secs(match required(env, "RELEASE_TARGET")? {
+            "integration" => 21600,
+            "installation" => 10800,
+            _ => 10000,
+        }),
+        Some(bootstrap),
+    );
+    if let Ok(meta) = fs::symlink_metadata(work.join("native-ios.log"))
+        && meta.is_file()
+        && !meta.file_type().is_symlink()
+        && meta.len() <= 8 * 1024 * 1024
+    {
+        let _ = fs::copy(work.join("native-ios.log"), root.join("task.log"));
+    }
+    outcome?;
+    frozen.verify()?;
+    source::verify_tools(src, &checkout)?;
+    source::verify(src, &request.source_sha, &checkout, false, 0)?;
+    Ok(())
+}

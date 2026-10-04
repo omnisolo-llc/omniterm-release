@@ -33,7 +33,7 @@ jobs:
         shell: bash
         run: |
           npm ci --prefix relay/cloudflare
-          python -m unittest discover -s ci -p 'test_*.py'
+          bash ci/test-native-release.sh
           node --test ci/test_sealed_diagnostics.cjs
           npm test --prefix relay/cloudflare
 

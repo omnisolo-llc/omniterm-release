@@ -112,7 +112,7 @@ def validate_target_request(target, request):
         raise ValueError('Apple submission requires ios_action=submit')
 
 
-def private_task_environment(env, submodule_token):
+def private_task_environment(env, submodule_token, submodule_deploy_key_base64=''):
     # The reviewed private task does not need workflow command files. Keeping
     # these paths away from it prevents accidental writes to later Actions steps.
     workflow_command_files = {'GITHUB_ENV', 'GITHUB_OUTPUT', 'GITHUB_PATH',
@@ -120,6 +120,8 @@ def private_task_environment(env, submodule_token):
     task_env = {key: value for key, value in env.items() if key not in workflow_command_files}
     if submodule_token:
         task_env['SOURCE_SUBMODULE_TOKEN'] = submodule_token
+    if submodule_deploy_key_base64:
+        task_env['SOURCE_SUBMODULE_DEPLOY_KEY_BASE64'] = submodule_deploy_key_base64
     return task_env
 
 
@@ -864,6 +866,7 @@ def main():
     env = os.environ.copy()
     recipient = env.pop('DIAGNOSTICS_PUBLIC_KEY', '')
     submodule_token = env.pop('SOURCE_SUBMODULE_TOKEN', '')
+    submodule_deploy_key_base64 = env.pop('SOURCE_SUBMODULE_DEPLOY_KEY_BASE64', '')
     env['BUILD_CONFIG'] = env.get('BUILD_CONFIG') or '{}'
     if (env.get('GITHUB_ACTIONS') != 'true'
             or env.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'
@@ -958,7 +961,8 @@ def main():
                 # performs release tasks and retains diagnostics only in private storage.
                 stage = 'private-task'
                 task_command = [sys.executable, '-I', '-B', str(script)]
-                task_env = private_task_environment(env, submodule_token)
+                task_env = private_task_environment(
+                    env, submodule_token, submodule_deploy_key_base64=submodule_deploy_key_base64)
                 verify_reviewed_worktree(source, sha, entry.parent, env, log,
                                          require_read_only=True)
                 invoke(task_command, source, task_env, log,
