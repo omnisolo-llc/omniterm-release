@@ -81,7 +81,8 @@ jobs:
           sudo apt-get install -y build-essential cmake libicu-dev
       - name: Test the first-party MoQT control and cutoff API
         run: |
-          npm ci --prefix relay/moq
+          npm ci --ignore-scripts --prefix relay/moq
+          npm run native-build --prefix relay/moq
           npm test --prefix relay/moq
 
   native-relay-contract:

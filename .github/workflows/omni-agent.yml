@@ -62,7 +62,6 @@ jobs:
           RESOLVED_SOURCE_SHA: ${{ steps.approved.outputs.source_sha }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ steps.approved.outputs.source_branch }}
-          SOURCE_ENTRYPOINT: scripts/release/agent_entrypoint.py
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}

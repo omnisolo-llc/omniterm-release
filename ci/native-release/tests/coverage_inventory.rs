@@ -43,7 +43,7 @@ fn every_legacy_test_maps_to_existing_native_assertions() {
             }
         }
     }
-    // Legacy references may be deleted only by the integration owner after parity review.
+    // Keep the mapping as a permanent audit record after deleting the old suite.
     if present > 0 {
         assert_eq!(
             present,

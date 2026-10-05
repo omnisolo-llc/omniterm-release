@@ -1,4 +1,4 @@
-# Local Python/test state and private working copies must never be committed.
+# Local runtime state and private working copies must never be committed.
 __pycache__/
 *.py[cod]
 .venv/

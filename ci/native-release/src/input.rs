@@ -168,15 +168,8 @@ pub fn validate_request(raw: &str) -> Result<()> {
     Request::parse(raw).map(|_| ())
 }
 pub fn validate_authority(env: &Environment) -> Result<()> {
-    if env.get("SOURCE_ENTRYPOINT").is_some_and(|v| {
-        !v.is_empty()
-            && ![
-                "scripts/release/entrypoint.py",
-                "tools/release-cli/Cargo.toml",
-            ]
-            .contains(&v.as_str())
-    }) {
-        return Err("Invalid release compatibility identifier");
+    if env.contains_key("SOURCE_ENTRYPOINT") {
+        return Err("Legacy source entrypoint input is unsupported");
     }
     for (name, expected) in [
         ("GITHUB_ACTIONS", "true"),
