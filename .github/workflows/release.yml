@@ -125,38 +125,59 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
+      max-parallel: 6
       matrix:
         include:
           - platform: linux
-            runner: omniterm-release-linux
+            runner: ubuntu-24.04
             device_variable: OMNI_INTEGRATION_DEVICE_LINUX
+            default_device: linux
             defines_variable: OMNI_INTEGRATION_DEFINES_LINUX
           - platform: macos
-            runner: omniterm-release-macos
+            runner: macos-26
             device_variable: OMNI_INTEGRATION_DEVICE_MACOS
+            default_device: macos
             defines_variable: OMNI_INTEGRATION_DEFINES_MACOS
           - platform: windows
-            runner: omniterm-release-windows
+            runner: windows-2025
             device_variable: OMNI_INTEGRATION_DEVICE_WINDOWS
+            default_device: windows
             defines_variable: OMNI_INTEGRATION_DEFINES_WINDOWS
           - platform: android
-            runner: omniterm-release-android
+            runner: ubuntu-24.04
             device_variable: OMNI_INTEGRATION_DEVICE_ANDROID
+            default_device: ''
             defines_variable: OMNI_INTEGRATION_DEFINES_ANDROID
           - platform: ios
-            runner: omniterm-release-ios
+            runner: macos-26
             device_variable: OMNI_INTEGRATION_DEVICE_IOS
+            default_device: ''
             defines_variable: OMNI_INTEGRATION_DEFINES_IOS
           - platform: web
-            runner: omniterm-release-web
+            runner: ubuntu-24.04
             device_variable: OMNI_INTEGRATION_DEVICE_WEB
+            default_device: chrome
             defines_variable: OMNI_INTEGRATION_DEFINES_WEB
-    runs-on: [self-hosted, '${{ matrix.runner }}']
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Presence flags are not credentials and are not execution evidence.
+      # Missing physical-device/fixture inputs fail here, not after a queue timeout.
+      - name: Check integration prerequisites without exposing configuration
+        run: bash ci/native-release/run.sh check-integration-prerequisites
+        env:
+          RELEASE_PREREQUISITE_PRESENCE: >-
+            {"SOURCE_REPOSITORY":${{ secrets.SOURCE_REPOSITORY != '' }},
+             "SOURCE_BRANCH":${{ secrets.SOURCE_BRANCH != '' }},
+             "SOURCE_DEPLOY_KEY":${{ secrets.SOURCE_DEPLOY_KEY != '' }},
+             "SOURCE_KNOWN_HOSTS":${{ secrets.SOURCE_KNOWN_HOSTS != '' }},
+             "BUILD_CONFIG":${{ secrets.BUILD_CONFIG != '' }},
+             "STORAGE_CONFIG":${{ secrets.STORAGE_CONFIG != '' }},
+             "OMNITERM_VPN_PROVIDER_PUBLIC_KEY":${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY != '' }},
+             "OMNI_INTEGRATION_DEVICE":${{ (vars[matrix.device_variable] || matrix.default_device) != '' }}}
       - name: Execute genuine reviewed application journeys and retain private evidence
         run: bash ci/native-release/run.sh run
         env:
@@ -177,7 +198,7 @@ jobs:
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           OMNI_INTEGRATION_PLATFORM: ${{ matrix.platform }}
-          OMNI_INTEGRATION_DEVICE: ${{ vars[matrix.device_variable] }}
+          OMNI_INTEGRATION_DEVICE: ${{ vars[matrix.device_variable] || matrix.default_device }}
           OMNI_INTEGRATION_DEFINES: ${{ vars[matrix.defines_variable] }}
           OMNI_CHROMEDRIVER_PORT: ${{ vars.OMNI_CHROMEDRIVER_PORT }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
@@ -203,7 +224,7 @@ jobs:
       max-parallel: 6
       matrix:
         target: ${{ inputs.verify_target == 'all' && fromJSON('["linux","windows","macos","android","web","ios"]') || fromJSON(format('["{0}"]', inputs.verify_target)) }}
-    runs-on: ${{ matrix.target == 'windows' && 'windows-2022' || ((matrix.target == 'macos' || matrix.target == 'ios') && 'macos-26' || 'ubuntu-24.04') }}
+    runs-on: ${{ matrix.target == 'windows' && 'windows-2025' || ((matrix.target == 'macos' || matrix.target == 'ios') && 'macos-26' || 'ubuntu-24.04') }}
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -392,7 +413,7 @@ jobs:
     needs: [resolve, validate]
     if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
     environment: downloads
-    runs-on: windows-2022
+    runs-on: windows-2025
     timeout-minutes: 180
     permissions:
       contents: write
@@ -613,45 +634,46 @@ jobs:
       id-token: write
     strategy:
       fail-fast: false
+      max-parallel: 6
       matrix:
         include:
           - platform: linux
-            runner: omniterm-release-linux
+            runner: ubuntu-24.04
             attestation_environment: vpn-installation-linux
             device_variable: OMNI_INTEGRATION_DEVICE_LINUX
             config_variable: OMNI_INSTALL_CONFIG_LINUX
             vpn_profile_variable: OMNI_VPN_INSTALLATION_PROFILE_LINUX
           - platform: macos
-            runner: omniterm-release-macos
+            runner: macos-26
             attestation_environment: vpn-installation-macos
             device_variable: OMNI_INTEGRATION_DEVICE_MACOS
             config_variable: OMNI_INSTALL_CONFIG_MACOS
             vpn_profile_variable: OMNI_VPN_INSTALLATION_PROFILE_MACOS
           - platform: windows
-            runner: omniterm-release-windows
+            runner: windows-2025
             attestation_environment: vpn-installation-windows
             device_variable: OMNI_INTEGRATION_DEVICE_WINDOWS
             config_variable: OMNI_INSTALL_CONFIG_WINDOWS
             vpn_profile_variable: OMNI_VPN_INSTALLATION_PROFILE_WINDOWS
           - platform: android
-            runner: omniterm-release-android
+            runner: ubuntu-24.04
             attestation_environment: vpn-installation-android
             device_variable: OMNI_INTEGRATION_DEVICE_ANDROID
             config_variable: OMNI_INSTALL_CONFIG_ANDROID
             vpn_profile_variable: OMNI_VPN_INSTALLATION_PROFILE_ANDROID
           - platform: ios
-            runner: omniterm-release-ios
+            runner: macos-26
             attestation_environment: vpn-installation-ios
             device_variable: OMNI_INTEGRATION_DEVICE_IOS
             config_variable: OMNI_INSTALL_CONFIG_IOS
             vpn_profile_variable: OMNI_VPN_INSTALLATION_PROFILE_IOS
           - platform: web
-            runner: omniterm-release-web
+            runner: ubuntu-24.04
             attestation_environment: downloads
             device_variable: OMNI_INTEGRATION_DEVICE_WEB
             config_variable: OMNI_INSTALL_CONFIG_WEB
             vpn_profile_variable: OMNI_VPN_INSTALLATION_PROFILE_WEB
-    runs-on: [self-hosted, '${{ matrix.runner }}']
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -700,7 +722,7 @@ jobs:
     needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation]
     if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
     environment: vpn-container
-    runs-on: [self-hosted, '${{ matrix.runner }}']
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     permissions:
       contents: read
@@ -713,9 +735,9 @@ jobs:
       matrix:
         include:
           - kernel_state: present
-            runner: omniterm-release-vpn-kmod-present
+            runner: ubuntu-24.04
           - kernel_state: absent
-            runner: omniterm-release-vpn-kmod-absent
+            runner: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -870,7 +892,7 @@ jobs:
     needs: [resolve, publication_prepare]
     if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
     environment: managed-rtc-provider
-    runs-on: [self-hosted, 'omniterm-release-managed-rtc']
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
     permissions:
       contents: read
@@ -916,7 +938,7 @@ jobs:
     needs: [resolve, publication_prepare, managed_rtc_provider]
     if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
     environment: external-tests
-    runs-on: [self-hosted, '${{ matrix.runner }}']
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     permissions:
       contents: read
@@ -926,18 +948,19 @@ jobs:
       cancel-in-progress: false
     strategy:
       fail-fast: false
+      max-parallel: 6
       matrix:
         include:
           - platform: linux
-            runner: omniterm-release-linux
+            runner: ubuntu-24.04
             config_variable: OMNI_EXTERNAL_CONFIG_LINUX
             candidate_guard_variable: OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_LINUX
           - platform: macos
-            runner: omniterm-release-macos
+            runner: macos-26
             config_variable: OMNI_EXTERNAL_CONFIG_MACOS
             candidate_guard_variable: OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_MACOS
           - platform: windows
-            runner: omniterm-release-windows
+            runner: windows-2025
             config_variable: OMNI_EXTERNAL_CONFIG_WINDOWS
             candidate_guard_variable: OMNI_EXTERNAL_CANDIDATE_GUARD_CONFIG_WINDOWS
     steps:
@@ -1050,7 +1073,7 @@ jobs:
     needs: [resolve, publication_prepare, external_tests]
     if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
     environment: external-windows-signing
-    runs-on: [self-hosted, 'omniterm-release-windows']
+    runs-on: windows-2025
     timeout-minutes: 180
     permissions:
       contents: read

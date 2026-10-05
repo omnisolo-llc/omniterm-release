@@ -113,8 +113,9 @@ native Secret Service and are never workflow variables or profile literals.
 The protected `installation` and `vpn-container` jobs use `id-token: write` only
 for signed same-run VPN evidence; neither receives app-signing configuration.
 The protected `vpn-container` environment needs an owner-only
-`OMNITERM_VPN_E2E_PROFILE_FILE` and distinct self-hosted labels
-`omniterm-release-vpn-kmod-present` and `omniterm-release-vpn-kmod-absent`.
+`OMNITERM_VPN_E2E_PROFILE_FILE`. The two kernel-state jobs run on separate
+standard `ubuntu-24.04` VMs, and must verify their actual kernel state;
+selecting a matrix value does not establish that state.
 Configure `OMNITERM_VPN_E2E_CLIENT_BASE_IMAGE`, `OMNITERM_VPN_E2E_GATEWAY_IMAGE`,
 `OMNITERM_VPN_E2E_RELAY_IMAGE`, `OMNITERM_VPN_E2E_RECEIVER_IMAGE`, and
 `OMNITERM_VPN_E2E_DNS_IMAGE` as OCI references pinned to `sha256` digests. The
@@ -136,12 +137,28 @@ Protected release tasks require an isolated runner that accepts one job at a tim
 and is not shared with untrusted jobs. The launcher verifies and marks its import
 tree read-only before execution, but those permissions are not immutable against
 another process running as the same OS account.
-Register dedicated self-hosted runner labels `omniterm-release-linux`,
-`omniterm-release-macos`, `omniterm-release-windows`, `omniterm-release-android`,
-`omniterm-release-ios`, `omniterm-release-web`, and
-`omniterm-release-managed-rtc`. Integration and installation jobs require
-attached devices or browser fixtures on those runners; the external acceptance
-jobs reuse the Linux, macOS, and Windows runners.
+Full application release jobs use standard GitHub-hosted runners:
+`ubuntu-24.04` for Linux/Android/web/provider jobs, `windows-2025` for Windows,
+and `macos-26` for macOS/iOS. They do not wait for a self-hosted Actions agent.
+This routing change does not provision physical devices or private fixtures:
+Android/iOS device-only cases still require genuine physical-device evidence,
+and missing fixture/profile/signing inputs still block publication. A simulator
+must never be represented as an installed signed device IPA.
+
+Before acquiring private source, each integration job checks **presence booleans**
+for its source configuration, `BUILD_CONFIG`, `STORAGE_CONFIG`,
+`OMNITERM_VPN_PROVIDER_PUBLIC_KEY` and the selected integration device.
+Desktop/web device IDs default to `linux`, `macos`, `windows` and `chrome`;
+`OMNI_INTEGRATION_DEVICE_<PLATFORM>` can override them. Mobile jobs have no
+invented physical-device default. The optional
+`OMNI_INTEGRATION_DEFINES_<PLATFORM>` remains a private fixture-file path,
+not JSON text; its absence is not an unconditional presence failure, and the
+existing per-case fixture validation remains authoritative.
+Errors disclose only fixed configuration names.
+Passing this check proves neither valid credential values nor executed tests.
+Every existing integration, signing, installation, provider and publication gate
+remains required. Actions artifact retention is a separate storage concern;
+standard runner allocation alone does not certify a completed zero-cost migration.
 Leave **build_only** enabled and
 **ios_action=skip** to check Windows, Linux, macOS, Android, browser bundles, and unsigned iOS device builds
 without signing, storage credentials, or publication. Choose **verify_target** to

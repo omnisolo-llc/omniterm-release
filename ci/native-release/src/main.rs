@@ -4,6 +4,19 @@ fn main() {
         std::process::exit(1);
     }
     let command = std::env::args().nth(1).unwrap_or_default();
+    if command == "check-integration-prerequisites" {
+        if std::env::args().len() != 2 {
+            eprintln!("Unexpected prerequisite-check arguments");
+            std::process::exit(1);
+        }
+        if let Err(error) =
+            omni_release_launcher::prerequisites::check_integration(&std::env::vars().collect())
+        {
+            eprintln!("Native release preflight: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if command == "audit-runners" {
         let args: Vec<String> = std::env::args().skip(2).collect();
         if let Err(error) = omni_release_launcher::runner_policy::cli(&args) {
