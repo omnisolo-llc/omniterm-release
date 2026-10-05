@@ -2,7 +2,7 @@
 //! This is not a test receipt and cannot certify devices, signatures or packages.
 use crate::{Environment, Result};
 
-const NAMES: [&str; 9] = [
+const NAMES: [&str; 8] = [
     "SOURCE_REPOSITORY",
     "SOURCE_BRANCH",
     "SOURCE_DEPLOY_KEY",
@@ -11,7 +11,6 @@ const NAMES: [&str; 9] = [
     "STORAGE_CONFIG",
     "OMNITERM_VPN_PROVIDER_PUBLIC_KEY",
     "OMNI_INTEGRATION_DEVICE",
-    "OMNI_INTEGRATION_DEFINES",
 ];
 
 pub fn check_integration(env: &Environment) -> Result<()> {

@@ -147,9 +147,14 @@ must never be represented as an installed signed device IPA.
 
 Before acquiring private source, each integration job checks **presence booleans**
 for its source configuration, `BUILD_CONFIG`, `STORAGE_CONFIG`,
-`OMNITERM_VPN_PROVIDER_PUBLIC_KEY`, `OMNI_INTEGRATION_DEVICE_<PLATFORM>` and
-`OMNI_INTEGRATION_DEFINES_<PLATFORM>`. The last setting is the existing private
-fixture-file path, not JSON text. Errors disclose only fixed configuration names.
+`OMNITERM_VPN_PROVIDER_PUBLIC_KEY` and the selected integration device.
+Desktop/web device IDs default to `linux`, `macos`, `windows` and `chrome`;
+`OMNI_INTEGRATION_DEVICE_<PLATFORM>` can override them. Mobile jobs have no
+invented physical-device default. The optional
+`OMNI_INTEGRATION_DEFINES_<PLATFORM>` remains a private fixture-file path,
+not JSON text; its absence is not an unconditional presence failure, and the
+existing per-case fixture validation remains authoritative.
+Errors disclose only fixed configuration names.
 Passing this check proves neither valid credential values nor executed tests.
 Every existing integration, signing, installation, provider and publication gate
 remains required. Actions artifact retention is a separate storage concern;

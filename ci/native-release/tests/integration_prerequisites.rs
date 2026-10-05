@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use std::process::{Command, Output};
 
-const NAMES: [&str; 9] = [
+const NAMES: [&str; 8] = [
     "SOURCE_REPOSITORY",
     "SOURCE_BRANCH",
     "SOURCE_DEPLOY_KEY",
@@ -10,7 +10,6 @@ const NAMES: [&str; 9] = [
     "STORAGE_CONFIG",
     "OMNITERM_VPN_PROVIDER_PUBLIC_KEY",
     "OMNI_INTEGRATION_DEVICE",
-    "OMNI_INTEGRATION_DEFINES",
 ];
 fn check(raw: &str) -> Output {
     Command::new(env!("CARGO_BIN_EXE_omni-release-launcher"))
@@ -48,7 +47,6 @@ fn reports_every_missing_name_without_printing_values() {
         "STORAGE_CONFIG",
         "OMNITERM_VPN_PROVIDER_PUBLIC_KEY",
         "OMNI_INTEGRATION_DEVICE",
-        "OMNI_INTEGRATION_DEFINES",
     ] {
         value[name] = json!(false);
     }
@@ -59,7 +57,6 @@ fn reports_every_missing_name_without_printing_values() {
         "STORAGE_CONFIG",
         "OMNITERM_VPN_PROVIDER_PUBLIC_KEY",
         "OMNI_INTEGRATION_DEVICE",
-        "OMNI_INTEGRATION_DEFINES",
     ] {
         assert!(
             errors.contains(&format!("Missing integration prerequisite: {name}")),

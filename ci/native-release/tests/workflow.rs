@@ -634,7 +634,7 @@ fn fixture_trust_files_and_publication_credentials_are_scoped_to_their_stages() 
         (
             "integration",
             "OMNI_INTEGRATION_DEVICE",
-            "${{ vars[matrix.device_variable] }}",
+            "${{ vars[matrix.device_variable] || matrix.default_device }}",
         ),
         (
             "integration",

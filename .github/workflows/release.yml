@@ -131,26 +131,32 @@ jobs:
           - platform: linux
             runner: ubuntu-24.04
             device_variable: OMNI_INTEGRATION_DEVICE_LINUX
+            default_device: linux
             defines_variable: OMNI_INTEGRATION_DEFINES_LINUX
           - platform: macos
             runner: macos-26
             device_variable: OMNI_INTEGRATION_DEVICE_MACOS
+            default_device: macos
             defines_variable: OMNI_INTEGRATION_DEFINES_MACOS
           - platform: windows
             runner: windows-2025
             device_variable: OMNI_INTEGRATION_DEVICE_WINDOWS
+            default_device: windows
             defines_variable: OMNI_INTEGRATION_DEFINES_WINDOWS
           - platform: android
             runner: ubuntu-24.04
             device_variable: OMNI_INTEGRATION_DEVICE_ANDROID
+            default_device: ''
             defines_variable: OMNI_INTEGRATION_DEFINES_ANDROID
           - platform: ios
             runner: macos-26
             device_variable: OMNI_INTEGRATION_DEVICE_IOS
+            default_device: ''
             defines_variable: OMNI_INTEGRATION_DEFINES_IOS
           - platform: web
             runner: ubuntu-24.04
             device_variable: OMNI_INTEGRATION_DEVICE_WEB
+            default_device: chrome
             defines_variable: OMNI_INTEGRATION_DEFINES_WEB
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
@@ -171,8 +177,7 @@ jobs:
              "BUILD_CONFIG":${{ secrets.BUILD_CONFIG != '' }},
              "STORAGE_CONFIG":${{ secrets.STORAGE_CONFIG != '' }},
              "OMNITERM_VPN_PROVIDER_PUBLIC_KEY":${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY != '' }},
-             "OMNI_INTEGRATION_DEVICE":${{ vars[matrix.device_variable] != '' }},
-             "OMNI_INTEGRATION_DEFINES":${{ vars[matrix.defines_variable] != '' }}}
+             "OMNI_INTEGRATION_DEVICE":${{ (vars[matrix.device_variable] || matrix.default_device) != '' }}}
       - name: Execute genuine reviewed application journeys and retain private evidence
         run: bash ci/native-release/run.sh run
         env:
@@ -193,7 +198,7 @@ jobs:
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           OMNI_INTEGRATION_PLATFORM: ${{ matrix.platform }}
-          OMNI_INTEGRATION_DEVICE: ${{ vars[matrix.device_variable] }}
+          OMNI_INTEGRATION_DEVICE: ${{ vars[matrix.device_variable] || matrix.default_device }}
           OMNI_INTEGRATION_DEFINES: ${{ vars[matrix.defines_variable] }}
           OMNI_CHROMEDRIVER_PORT: ${{ vars.OMNI_CHROMEDRIVER_PORT }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}

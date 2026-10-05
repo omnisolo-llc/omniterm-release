@@ -65,6 +65,37 @@ fn full_release_jobs_do_not_wait_for_self_hosted_agents() {
 }
 
 #[test]
+fn desktop_devices_have_automatic_defaults_but_mobile_never_fakes_a_physical_device() {
+    let w = workflow();
+    let integration = &w["jobs"]["integration"];
+    for row in integration["strategy"]["matrix"]["include"]
+        .as_sequence()
+        .unwrap()
+    {
+        let platform = row["platform"].as_str().unwrap();
+        let expected = match platform {
+            "linux" => "linux",
+            "macos" => "macos",
+            "windows" => "windows",
+            "web" => "chrome",
+            "android" | "ios" => "",
+            _ => unreachable!(),
+        };
+        assert_eq!(row["default_device"].as_str(), Some(expected), "{platform}");
+    }
+    let task = integration["steps"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .find(|step| step["env"]["RELEASE_TARGET"].as_str() == Some("integration"))
+        .unwrap();
+    assert_eq!(
+        task["env"]["OMNI_INTEGRATION_DEVICE"].as_str(),
+        Some("${{ vars[matrix.device_variable] || matrix.default_device }}")
+    );
+}
+
+#[test]
 fn integration_prerequisites_fail_before_private_source_execution() {
     let w = workflow();
     let job = &w["jobs"]["integration"];
@@ -97,12 +128,14 @@ fn integration_prerequisites_fail_before_private_source_execution() {
         "STORAGE_CONFIG",
         "OMNITERM_VPN_PROVIDER_PUBLIC_KEY",
         "OMNI_INTEGRATION_DEVICE",
-        "OMNI_INTEGRATION_DEFINES",
     ] {
         assert!(flags.contains(name), "missing configuration check: {name}");
     }
     assert!(flags.contains("secrets.STORAGE_CONFIG != ''"));
-    assert!(flags.contains("vars[matrix.device_variable] != ''"));
-    assert!(flags.contains("vars[matrix.defines_variable] != ''"));
+    assert!(flags.contains("(vars[matrix.device_variable] || matrix.default_device) != ''"));
+    assert!(
+        !flags.contains("OMNI_INTEGRATION_DEFINES"),
+        "optional fixture override must not become an unconditional prerequisite"
+    );
     assert!(job["continue-on-error"].is_null());
 }
