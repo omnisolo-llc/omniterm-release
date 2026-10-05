@@ -4,6 +4,7 @@ pub mod guards;
 pub mod input;
 pub mod json;
 pub mod launch;
+pub mod prerequisites;
 pub mod process;
 pub mod runner_policy;
 pub mod source;

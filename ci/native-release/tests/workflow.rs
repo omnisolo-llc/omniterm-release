@@ -540,7 +540,7 @@ fn build_integration_installation_and_provider_matrices_remain_complete() {
             .contains("fromJSON('[\"linux\",\"windows\",\"macos\",\"android\",\"web\",\"ios\"]')")
     );
     let runner = jobs["verify"]["runs-on"].as_str().unwrap();
-    for name in ["windows-2022", "macos-26", "ubuntu-24.04"] {
+    for name in ["windows-2025", "macos-26", "ubuntu-24.04"] {
         assert!(runner.contains(name));
     }
     for row in jobs["installation"]["strategy"]["matrix"]["include"]
@@ -576,16 +576,8 @@ fn build_integration_installation_and_provider_matrices_remain_complete() {
         BTreeSet::from(["present", "absent"])
     );
     for row in vpn["strategy"]["matrix"]["include"].as_sequence().unwrap() {
-        assert_eq!(
-            row["runner"].as_str(),
-            Some(
-                format!(
-                    "omniterm-release-vpn-kmod-{}",
-                    row["kernel_state"].as_str().unwrap()
-                )
-                .as_str()
-            )
-        );
+        // Separate hosted VMs retain independent, explicitly verified kernel states.
+        assert_eq!(row["runner"].as_str(), Some("ubuntu-24.04"));
     }
     for text in [
         "docker info >/dev/null 2>&1",
@@ -595,13 +587,8 @@ fn build_integration_installation_and_provider_matrices_remain_complete() {
         require_text(vpn, text);
     }
     assert_eq!(
-        jobs["managed_rtc_provider"]["runs-on"]
-            .as_sequence()
-            .unwrap(),
-        &vec![
-            Value::String("self-hosted".into()),
-            Value::String("omniterm-release-managed-rtc".into())
-        ]
+        jobs["managed_rtc_provider"]["runs-on"].as_str(),
+        Some("ubuntu-24.04")
     );
     let external = &jobs["external_tests"];
     assert_eq!(
@@ -625,10 +612,13 @@ fn build_integration_installation_and_provider_matrices_remain_complete() {
                 Some(format!("{prefix}{}", platform.to_ascii_uppercase()).as_str())
             );
         }
-        assert_eq!(
-            row["runner"].as_str(),
-            Some(format!("omniterm-release-{platform}").as_str())
-        );
+        let runner = match platform {
+            "linux" => "ubuntu-24.04",
+            "macos" => "macos-26",
+            "windows" => "windows-2025",
+            _ => unreachable!(),
+        };
+        assert_eq!(row["runner"].as_str(), Some(runner));
     }
 }
 #[test]
