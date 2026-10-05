@@ -1,8 +1,9 @@
 # Public Launcher Python Removal Migration
 
 The launcher executes native Rust for every existing release/build stage and the
-agent workflow. Legacy Python is read-only reference data until the coordinator
-removes it after cross-repository integration. There is no runtime fallback.
+agent workflow. Former Python implementation and test files have been removed
+after their behavior and assertions were ported; the inventory below records
+that parity review. There is no runtime fallback.
 
 ## Module And Command Map
 
@@ -24,9 +25,9 @@ this public launcher never emits substitute release receipts.
 ## Coverage Inventory
 
 The following 97 legacy tests are individually mapped. Native test names
-are in tests/FILE.rs. Some legacy assertions are consolidated into stronger
-parameterized native tests; they are not deleted. coverage_inventory.rs checks
-that every retained legacy test appears here and every mapped native test exists.
+are in tests/FILE.rs. Some assertions are consolidated into stronger
+parameterized native tests. coverage_inventory.rs checks that every mapped
+native test exists and verifies any retained legacy inventory against this table.
 
 | Legacy test | Equivalent native test(s) | Assertions |
 | --- | --- | --- |
@@ -116,7 +117,7 @@ that every retained legacy test appears here and every mapped native test exists
 | `test_release_matrix.py::test_linux_provider_and_oidc_fixtures_are_separate_and_required` | `workflow::linux_fixture_docs_keep_strict_separate_provider_and_oidc_contracts; workflow::fixture_trust_files_and_publication_credentials_are_scoped_to_their_stages` | Exact documented separate provider/OIDC owner files and fields; no ambient fixture credentials or parallel OIDC job bypass. |
 | `test_release_matrix.py::test_full_release_requires_the_self_hosted_relay_kit` | `dispatch::normalization_preserves_release_contract_and_denies_partial_release` | Strict normalized request; full releases require all targets, selfhost and explicit Apple action; automatic release is submit-only. |
 | `test_release_matrix.py::test_public_relay_locked_suites_run_in_contract_and_release_gates` | `workflow::pinned_actions_sdk_versions_and_real_relay_suites_remain_required; workflow::permissions_environments_and_all_task_inputs_keep_exact_step_scope` | Pinned action/SDK hashes, read-only preparation, locked real relay suites and hash-pinned signing tooling. |
-| `test_release_matrix.py::test_moq_native_cutoff_patch_is_pinned_and_rebuilt_on_install` | `workflow::public_moq_cutoff_patch_and_locked_rebuild_contract_is_preserved; workflow::pinned_actions_sdk_versions_and_real_relay_suites_remain_required` | Pinned rebuild/patch/native addon hashes and install hooks plus required actual MoQT suites. |
+| `test_release_matrix.py::test_moq_native_cutoff_patch_is_pinned_and_rebuilt_on_install` | `workflow::public_moq_cutoff_patch_and_locked_rebuild_contract_is_preserved; workflow::pinned_actions_sdk_versions_and_real_relay_suites_remain_required` | Pinned rebuild/patch/native addon hashes, disabled npm lifecycle scripts, explicit integrity-checked native rebuild, and required actual MoQT suites. |
 | `test_integration_handoff.py::test_launcher_refuses_pr_fork_and_other_source_repository` | `configuration::foreign_identity_paths_commands_and_missing_fields_fail_before_any_acquisition` | Canonical authority, missing required inputs and hostile path/ref/command rejection before checkout; sanitized executable failure. |
 | `test_integration_handoff.py::test_trusted_predicate_does_not_execute_a_hardware_job` | `configuration::foreign_identity_paths_commands_and_missing_fields_fail_before_any_acquisition` | Canonical authority, missing required inputs and hostile path/ref/command rejection before checkout; sanitized executable failure. |
 | `test_integration_handoff.py::test_launcher_checks_canonical_authority_for_resolve_and_build_targets` | `configuration::foreign_identity_paths_commands_and_missing_fields_fail_before_any_acquisition` | Canonical authority, missing required inputs and hostile path/ref/command rejection before checkout; sanitized executable failure. |
@@ -130,9 +131,9 @@ that every retained legacy test appears here and every mapped native test exists
 
 ## Explicit Runtime Changes
 
-- SOURCE_ENTRYPOINT is an optional validated legacy/configuration identifier,
-  never an executable path. The hardcoded native manifest and committed lockfile
-  replace reviewed Python script loading. The frozen region is the complete
+- The former SOURCE_ENTRYPOINT value is no longer requested, accepted, or
+  forwarded. The hardcoded native manifest and committed lockfile replace
+  reviewed script loading. The frozen region is the complete
   reviewed tools tree and its parent tools directory; source root remains usable
   by the real application builder. Source/tool bytes and handle identities are
   rechecked before Cargo, after compilation and after dispatch.

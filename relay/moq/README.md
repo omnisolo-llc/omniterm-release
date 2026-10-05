@@ -33,9 +33,10 @@ MOQ_MANAGED_USAGE_REQUIRED=true
 ```
 
 Install the locked package and start it. Installation requires Git, tar, CMake,
-a C++20 compiler, Python 3, and the ICU development libraries. The postinstall
-step verifies and rebuilds the adapter source closure from the SHA-512 pinned
-npm tarball in `package-lock.json`
+a C++20 compiler, and the ICU development libraries. Optional upstream tests
+and interpreter discovery are disabled for this native build. The explicit
+`npm run native-build` command verifies and rebuilds the adapter source closure
+from the SHA-512-pinned npm tarball in `package-lock.json`
 (`sha512-UOcDhjzQEll2sYC2nGBtklTkKCdx442LVPP9jxp09ZU12qYTG65pjPBC38PbZAJEoIwkBP85h7o2fuIcN2W73Q==`).
 It uses adapter commit `212ef743f0cf52adb234d60d5b41c48257e967b4` only to verify
 the pinned Quiche gitlink `80bf9559d3a4c08dde4b85abc46d190a88ffef64`. Tracked
@@ -47,7 +48,8 @@ generic prebuild fallback and Debug addon are removed. Owner cutoff is
 acknowledged only after the patched adapter reports the HTTP/3 session closed.
 
 ```sh
-npm ci --omit=dev
+npm ci --omit=dev --ignore-scripts
+npm run native-build
 npm start
 ```
 
@@ -103,8 +105,8 @@ be redacted from proxy/access logs.
 
 ### Native build identity and confirmed shutdown
 
-The install hook verifies the package-lock tarball integrity, adapter package
-version, pinned Quiche source identity, all three patch digests, the patched
+The `native-build` command verifies the package-lock tarball integrity, adapter
+package version, pinned Quiche source identity, all three patch digests, the patched
 source trees, and the platform/CPU-specific Release binary. Its receipt is
 accepted only when Node loads that exact addon; a stale CMake path is rebuilt
 locally. `node scripts/build-patched-webtransport.mjs --verify-only` checks the

@@ -32,8 +32,8 @@ application release implementation stays in the private source repository.
 
 All six build targets and all existing full-release stages are supported.
 Unknown targets, commands and request fields fail. There is no interpreter
-fallback. SOURCE_ENTRYPOINT is an optional validated compatibility identifier;
-the only executable build entry is tools/release-cli/Cargo.toml.
+fallback or legacy source-entrypoint input. The only executable build entry is
+tools/release-cli/Cargo.toml.
 
 ## Exact Private Handoff
 

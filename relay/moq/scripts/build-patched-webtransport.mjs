@@ -269,7 +269,9 @@ async function main() {
     await rm(legacyBuildRoot, {recursive: true, force: true});
     await rm(join(buildDirectory, 'Debug'), {recursive: true, force: true});
     const cmake = fileURLToPath(import.meta.resolve('cmake-js/bin/cmake-js'));
-    run(process.execPath, [cmake, 'build', '--CDnapi_build_version=6', '-O', buildDirectory],
+    run(process.execPath, [cmake, 'build', '--CDnapi_build_version=6',
+      '--CDgtest_build_tests=OFF', '--CDCMAKE_DISABLE_FIND_PACKAGE_Python3=TRUE',
+      '--CDCMAKE_DISABLE_FIND_PACKAGE_Python=TRUE', '-O', buildDirectory],
       {cwd: adapterRoot, env: buildEnv});
     if (!(await readFile(runtimeBinary)).byteLength) {
       throw new Error('Native build produced an empty platform addon');

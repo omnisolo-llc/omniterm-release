@@ -113,7 +113,6 @@ jobs:
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
-          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
 
@@ -171,7 +170,6 @@ jobs:
           RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
-          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
@@ -238,7 +236,6 @@ jobs:
           RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
-          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
@@ -290,7 +287,8 @@ jobs:
         run: |
           npm ci --prefix relay/native
           node --test --test-concurrency=1 ci/test_native_relay_contract.mjs
-          npm ci --prefix relay/moq
+          npm ci --ignore-scripts --prefix relay/moq
+          npm run native-build --prefix relay/moq
           npm test --prefix relay/moq
       - name: Validate reviewed source revision
         run: bash ci/native-release/run.sh run
@@ -306,7 +304,6 @@ jobs:
           RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
-          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
@@ -372,7 +369,6 @@ jobs:
           RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
-          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
@@ -439,7 +435,6 @@ jobs:
           RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
-          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
@@ -494,7 +489,6 @@ jobs:
           RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
-          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
@@ -543,7 +537,6 @@ jobs:
           RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
-          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
@@ -592,7 +585,6 @@ jobs:
           RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
-          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
@@ -678,7 +670,6 @@ jobs:
           RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
-          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
@@ -761,7 +752,6 @@ jobs:
           RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
-          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
@@ -810,7 +800,6 @@ jobs:
           RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
-          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
@@ -858,7 +847,6 @@ jobs:
           RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
-          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
@@ -906,7 +894,6 @@ jobs:
           RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
-          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
@@ -996,7 +983,7 @@ jobs:
           set -euo pipefail
           for tool in bash g++ x86_64-w64-mingw32-g++ x86_64-w64-mingw32-gcc \
             gpg gpgconf gpgv java javac pkg-config cargo rustc sha256sum; do
-            command -v "$tool" >/dev/null || { echo "missing protected Python host prerequisite: $tool" >&2; exit 1; }
+            command -v "$tool" >/dev/null || { echo "missing protected native host prerequisite: $tool" >&2; exit 1; }
           done
           pkg-config --exists gio-unix-2.0
           java_version="$(java -version 2>&1)"
@@ -1040,7 +1027,6 @@ jobs:
           RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
-          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
@@ -1108,7 +1094,6 @@ jobs:
           RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
-          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
@@ -1164,7 +1149,6 @@ jobs:
           RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
-          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
@@ -1215,7 +1199,6 @@ jobs:
           RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
           SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
           SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
-          SOURCE_ENTRYPOINT: ${{ secrets.SOURCE_ENTRYPOINT }}
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}

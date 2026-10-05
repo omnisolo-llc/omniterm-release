@@ -77,8 +77,9 @@ Tests, signing, installation, provider evidence, and package verification remain
 mandatory. The version defaults to `0.1.0`, so select `0.1.1` explicitly for that
 release. Platform job names include a UTC workflow identifier in `yyyymmddHHmm`
 format. Supply a fresh shared app build number from `1` to `9999`.
-Configure the source secrets for `ql-owo-lp/omniterm`, branch `main`, and
-`scripts/release/entrypoint.py`; the launcher rejects a different source identity.
+Configure the source repository and branch secrets for `ql-owo-lp/omniterm` and
+`main`; the launcher rejects a different source identity. `SOURCE_ENTRYPOINT` is
+no longer used; release stages execute the reviewed native CLI manifest.
 Configure repository variable `OMNITERM_VPN_PROVIDER_PUBLIC_KEY` as the canonical
 unpadded URL-safe base64 encoding of the managed VPN Worker's Ed25519 public key.
 It must decode to exactly 32 nonzero bytes. This public key is release metadata;

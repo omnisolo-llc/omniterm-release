@@ -39,6 +39,12 @@ fn require_text(value: &Value, text: &str) {
 fn every_public_workflow_uses_native_launch_and_contracts_without_legacy_runtime() {
     for name in ["release", "omni-agent", "contracts"] {
         let parsed = workflow(name);
+        assert!(
+            !serde_yaml::to_string(&parsed)
+                .unwrap()
+                .contains("SOURCE_ENTRYPOINT"),
+            "{name}: obsolete source entrypoint input"
+        );
         for (_, job) in parsed["jobs"].as_mapping().unwrap() {
             for step in steps(job) {
                 if let Some(action) = step["uses"].as_str() {
@@ -77,6 +83,15 @@ fn every_public_workflow_uses_native_launch_and_contracts_without_legacy_runtime
         &workflow("contracts")["jobs"]["contracts"],
         "bash ci/test-native-release.sh",
     );
+    for entry in fs::read_dir(repository().join("ci")).unwrap() {
+        let path = entry.unwrap().path();
+        assert_ne!(
+            path.extension().and_then(|extension| extension.to_str()),
+            Some("py"),
+            "legacy Python entrypoint or test remains: {}",
+            path.display()
+        );
+    }
 }
 #[test]
 fn native_shell_entrypoint_has_no_runtime_fallback_and_sanitizes_compilation() {
@@ -385,7 +400,6 @@ fn permissions_environments_and_all_task_inputs_keep_exact_step_scope() {
         for key in [
             "SOURCE_REPOSITORY",
             "SOURCE_BRANCH",
-            "SOURCE_ENTRYPOINT",
             "SOURCE_DEPLOY_KEY",
             "SOURCE_KNOWN_HOSTS",
         ] {
@@ -867,7 +881,8 @@ fn pinned_actions_sdk_versions_and_real_relay_suites_remain_required() {
     for command in [
         "npm ci --prefix relay/native",
         "node --test --test-concurrency=1 ci/test_native_relay_contract.mjs",
-        "npm ci --prefix relay/moq",
+        "npm ci --ignore-scripts --prefix relay/moq",
+        "npm run native-build --prefix relay/moq",
         "npm test --prefix relay/moq",
         "build-essential cmake libicu-dev",
     ] {
@@ -887,7 +902,8 @@ fn pinned_actions_sdk_versions_and_real_relay_suites_remain_required() {
         (
             "first-party-moq",
             vec![
-                "npm ci --prefix relay/moq",
+                "npm ci --ignore-scripts --prefix relay/moq",
+                "npm run native-build --prefix relay/moq",
                 "npm test --prefix relay/moq",
                 "build-essential cmake libicu-dev",
             ],
@@ -1099,9 +1115,11 @@ fn linux_fixture_docs_keep_strict_separate_provider_and_oidc_contracts() {
 fn public_moq_cutoff_patch_and_locked_rebuild_contract_is_preserved() {
     let package: serde_json::Value = serde_json::from_str(&read("relay/moq/package.json")).unwrap();
     assert_eq!(
-        package["scripts"]["postinstall"],
+        package["scripts"]["native-build"],
         "node scripts/build-patched-webtransport.mjs"
     );
+    assert!(package["scripts"]["postinstall"].is_null());
+    assert_eq!(read("relay/moq/.npmrc").trim(), "ignore-scripts=true");
     let builder = read("relay/moq/scripts/build-patched-webtransport.mjs");
     for text in [
         "212ef743f0cf52adb234d60d5b41c48257e967b4",
@@ -1115,6 +1133,9 @@ fn public_moq_cutoff_patch_and_locked_rebuild_contract_is_preserved() {
         "binary_sha256",
         "npm_config_build_from_source: 'true'",
         "cmake-js/bin/cmake-js",
+        "--CDgtest_build_tests=OFF",
+        "--CDCMAKE_DISABLE_FIND_PACKAGE_Python3=TRUE",
+        "--CDCMAKE_DISABLE_FIND_PACKAGE_Python=TRUE",
         "nativeBuildPath(adapterRoot)",
         "requireLoadedAddon",
         "webtransport-client-close.patch",

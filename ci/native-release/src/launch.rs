@@ -138,7 +138,6 @@ pub fn task_environment(parent: &Environment) -> Environment {
                 | "SOURCE"
                 | "SOURCE_REPOSITORY"
                 | "SOURCE_BRANCH"
-                | "SOURCE_ENTRYPOINT"
                 | "RESOLVED_SOURCE_SHA"
                 | "RESOLVED_VERSION"
                 | "RESOLVED_BUILD_NUMBER"

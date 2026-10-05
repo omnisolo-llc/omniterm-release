@@ -7,7 +7,7 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "postinstall": "node scripts/build-patched-webtransport.mjs",
+    "native-build": "node scripts/build-patched-webtransport.mjs",
     "start": "node src/index.js",
     "test": "node --test --test-concurrency=1 test/*.test.js"
   },

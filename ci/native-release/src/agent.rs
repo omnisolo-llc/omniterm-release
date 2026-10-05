@@ -78,15 +78,8 @@ pub fn validate_authority(env: &Environment) -> Result<()> {
             return Err("Untrusted pinned agent authority");
         }
     }
-    if env.get("SOURCE_ENTRYPOINT").is_some_and(|v| {
-        !v.is_empty()
-            && ![
-                "scripts/release/agent_entrypoint.py",
-                "tools/release-cli/Cargo.toml",
-            ]
-            .contains(&v.as_str())
-    }) {
-        return Err("Invalid agent compatibility identifier");
+    if env.contains_key("SOURCE_ENTRYPOINT") {
+        return Err("Legacy source entrypoint input is unsupported");
     }
     if !env.get("GITHUB_SHA").is_some_and(|s| valid_sha(s))
         || !["GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"]

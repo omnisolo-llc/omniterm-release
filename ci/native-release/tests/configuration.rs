@@ -154,16 +154,7 @@ fn foreign_identity_paths_commands_and_missing_fields_fail_before_any_acquisitio
             "SOURCE_BRANCH",
             vec!["-main", "main\n", "../x", "x/.bad", "x.lock", "other"],
         ),
-        (
-            "SOURCE_ENTRYPOINT",
-            vec![
-                "../task.py",
-                "/task.py",
-                "task.py",
-                "scripts/.hidden.py",
-                "tools/other/Cargo.toml",
-            ],
-        ),
+        ("SOURCE_ENTRYPOINT", vec!["legacy"]),
         (
             "RELEASE_TARGET",
             vec!["docker", "linux; echo unsafe", "-linux"],
