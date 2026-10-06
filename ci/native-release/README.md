@@ -118,6 +118,14 @@ source, keys, build outputs and plaintext logs are removed. Diagnostics use the
 existing Node RSA/AES-GCM sealer; only sealed output is publicly retained.
 Python and pip executables are refused by the native process runner.
 
+Failed subprocesses retain their numeric exit code (or Unix signal) in the public
+log. Bounded hints may identify compiler, test, dependency-download, storage-full,
+child-killed, or build-script failures and at most eight distinct Rust error
+codes. Raw output, private paths, test names, command arguments and configuration
+are never copied into that summary. A signal or matching log hint alone does not
+establish an out-of-memory diagnosis. The original failure still propagates;
+these summaries neither rerun a stage nor satisfy any release gate.
+
 ## Verification And Activation
 
 `TMPDIR=/home/kevin/omniterm/.git/python-removal-20261004/tmp CARGO_BUILD_JOBS=1 bash ci/test-native-release.sh`

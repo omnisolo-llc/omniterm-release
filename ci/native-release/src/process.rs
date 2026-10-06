@@ -138,6 +138,72 @@ impl Drop for WindowsJob {
         }
     }
 }
+/// Public diagnostics are deliberately closed: never copy child text, paths,
+/// arguments, environment values or private test names into the public log.
+fn failure_summary(status: std::process::ExitStatus, out: &[u8], err: &[u8]) -> String {
+    use std::collections::BTreeSet;
+    if status.success() {
+        return String::new();
+    }
+    let mut summary = if let Some(code) = status.code() {
+        format!("Native subprocess failed: exit-code={code}\n")
+    } else {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            match status.signal() {
+                Some(signal) => format!("Native subprocess failed: signal={signal}\n"),
+                None => "Native subprocess failed: termination=unknown\n".into(),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            "Native subprocess failed: termination=unknown\n".into()
+        }
+    };
+    let mut codes = BTreeSet::new();
+    let mut categories = BTreeSet::new();
+    for bytes in [out, err] {
+        for line in String::from_utf8_lossy(bytes).lines() {
+            if let Some(rest) = line.strip_prefix("error[E")
+                && rest.len() >= 6
+                && rest.as_bytes()[..4].iter().all(u8::is_ascii_digit)
+                && &rest.as_bytes()[4..6] == b"]:"
+            {
+                categories.insert("compiler");
+                if codes.len() < 8 {
+                    codes.insert(format!("E{}", &rest[..4]));
+                }
+            }
+            if line.starts_with("test result: FAILED.") || line.starts_with("error: test failed,") {
+                categories.insert("tests");
+            }
+            if line.starts_with("error: failed to download ")
+                || line.starts_with("error: failed to get ")
+            {
+                categories.insert("dependency-download");
+            }
+            if line.contains("No space left on device (os error 28)") {
+                categories.insert("storage-full");
+            }
+            if line.contains("signal: 9, SIGKILL") {
+                // A kill is observable; an out-of-memory cause is not established.
+                categories.insert("subprocess-killed");
+            }
+            if line.starts_with("error: failed to run custom build command for ") {
+                categories.insert("build-script");
+            }
+        }
+    }
+    for category in categories {
+        summary.push_str(&format!("Native subprocess category: {category}\n"));
+    }
+    for code in codes {
+        summary.push_str(&format!("Native compiler diagnostic: {code}\n"));
+    }
+    summary
+}
+
 pub fn run(
     program: &Path,
     args: &[String],
@@ -243,6 +309,9 @@ pub fn run(
     let err = err
         .map_err(|_| "Build errors unavailable")?
         .map_err(|_| "Build output exceeded its bound")?;
+    if !status.success() {
+        eprint!("{}", failure_summary(status, &out, &err));
+    }
     if let Some(log) = log.as_mut() {
         log.write_all(&out)
             .and_then(|_| log.write_all(&err))
