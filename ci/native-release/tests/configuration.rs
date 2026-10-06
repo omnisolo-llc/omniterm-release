@@ -25,6 +25,10 @@ fn env() -> Environment {
         ("SOURCE_BRANCH".into(), "main".into()),
         ("SOURCE_DEPLOY_KEY".into(), "synthetic".into()),
         ("SOURCE_KNOWN_HOSTS".into(), "synthetic".into()),
+        (
+            "OMNITERM_VPN_PROVIDER_PUBLIC_KEY".into(),
+            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, [1u8; 32]),
+        ),
         ("RELEASE_TARGET".into(), "linux".into()),
         (
             "RELEASE_REQUEST".into(),
@@ -32,6 +36,70 @@ fn env() -> Environment {
         ),
     ])
 }
+// Public fixture bytes only: no operator credentials or deployed trust keys.
+#[test]
+fn application_builds_reject_missing_or_malformed_trust_keys_before_acquisition() {
+    const KEY: &str = "OMNITERM_VPN_PROVIDER_PUBLIC_KEY";
+    for target in input::BUILD_TARGETS {
+        let mut environment = env();
+        environment.insert("RELEASE_TARGET".into(), target.to_string());
+        environment.remove(KEY);
+        assert_eq!(
+            launch::validate_configuration(&environment, "run").err(),
+            Some(
+                "Missing OMNITERM_VPN_PROVIDER_PUBLIC_KEY; configure the reviewed application trust key"
+            )
+        );
+        for invalid in [
+            String::new(),
+            "not-a-public-key-do-not-echo".into(),
+            "A".repeat(43),
+            "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQF".into(),
+            "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=".into(),
+            "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE\n".into(),
+        ] {
+            environment.insert(KEY.into(), invalid);
+            let error = launch::validate_configuration(&environment, "run").err();
+            assert!(error.is_some(), "{target}: invalid trust key accepted");
+            assert!(!error.unwrap().contains("do-not-echo"));
+        }
+        environment.insert(KEY.into(), env()[KEY].clone());
+        assert!(launch::validate_configuration(&environment, "run").is_ok());
+    }
+}
+
+#[test]
+fn resolver_does_not_need_application_trust_material() {
+    let mut environment = env();
+    environment.remove("OMNITERM_VPN_PROVIDER_PUBLIC_KEY");
+    environment.insert("RELEASE_TARGET".into(), "resolve".into());
+    assert!(launch::validate_configuration(&environment, "resolve").is_ok());
+}
+
+#[test]
+fn missing_trust_key_is_named_without_creating_checkout_or_build_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut environment = env();
+    environment.remove("OMNITERM_VPN_PROVIDER_PUBLIC_KEY");
+    environment.insert(
+        "RUNNER_TEMP".into(),
+        temp.path().to_string_lossy().into_owned(),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_omni-release-launcher"))
+        .arg("run")
+        .env_clear()
+        .envs(environment)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Missing OMNITERM_VPN_PROVIDER_PUBLIC_KEY")
+    );
+    assert!(output.stdout.is_empty());
+    assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+}
+
 fn full() -> Value {
     json!({"build_only":false,"source_sha":"a".repeat(40),"builder_sha":"b".repeat(40),"ios_action":"submit","build_number":"42"})
 }

@@ -35,6 +35,26 @@ Unknown targets, commands and request fields fail. There is no interpreter
 fallback or legacy source-entrypoint input. The only executable build entry is
 tools/release-cli/Cargo.toml.
 
+## Application trust-key prerequisite and phase reporting
+
+Every application build, including unsigned build-only verification, requires
+`OMNITERM_VPN_PROVIDER_PUBLIC_KEY`. It must be the reviewed public trust key for
+the deployed managed VPN provider, encoded as canonical unpadded base64url for
+32 nonzero bytes. Configure the existing workflow variable with that public
+value; never substitute a generated key or a test fixture. The launcher checks
+its format before checkout or private compilation and names only the missing or
+invalid variable, never its contents. This format check is not provider identity
+or signature verification. Source resolution and standalone-agent builds do
+not gain an application-only requirement.
+
+Public phase markers distinguish `native-toolchain`, `native-tool-tests`,
+`native-tool-build`, and `private-task`. A nonzero private task exit is reported
+as a task failure after the CLI compilation/tests passed, not a compiler error.
+The private task can reject configuration before writing its own status file.
+Compiler output, application output, and diagnostic contents remain private.
+A passing launcher test or compilation does not certify application execution,
+signing, installation, or release publication.
+
 ## Exact Private Handoff
 
 The compiled executable is native-target/release/omni-release (omni-release.exe

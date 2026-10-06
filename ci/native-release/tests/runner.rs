@@ -173,6 +173,7 @@ if [[ -f omniterm-release/payload ]]; then /usr/bin/git -C omniterm-release remo
             ("GITHUB_ACTIONS".into(),"true".into()),("GITHUB_EVENT_NAME".into(),"workflow_dispatch".into()),("GITHUB_REPOSITORY".into(),"omnisolo-llc/omniterm-release".into()),("GITHUB_REF".into(),"refs/heads/main".into()),("GITHUB_WORKFLOW_REF".into(),"omnisolo-llc/omniterm-release/.github/workflows/release.yml@refs/heads/main".into()),("GITHUB_SHA".into(),builder_sha.clone()),("GITHUB_RUN_ID".into(),"42".into()),("GITHUB_RUN_ATTEMPT".into(),"2".into()),
             ("SOURCE_REPOSITORY".into(),"ql-owo-lp/omniterm".into()),("SOURCE_BRANCH".into(),"main".into()),("SOURCE_DEPLOY_KEY".into(),"-----BEGIN SYNTHETIC PRIVATE KEY-----\nfixture\n-----END SYNTHETIC PRIVATE KEY-----".into()),("SOURCE_KNOWN_HOSTS".into(),"synthetic-host fixture".into()),("SOURCE_SUBMODULE_DEPLOY_KEY_BASE64".into(),base64::Engine::encode(&base64::engine::general_purpose::STANDARD,"-----BEGIN SYNTHETIC PRIVATE KEY-----\nfixture\n-----END SYNTHETIC PRIVATE KEY-----")),
             ("SOURCE_SUBMODULE_TOKEN".into(),"synthetic-read-token".into()),("SIGNING_CONFIG".into(),"synthetic-signing-config".into()),("STORAGE_CONFIG".into(),"synthetic-storage-config".into()),("BUILD_CONFIG".into(),r#"{"OMNI_ENABLE_VPN":"true"}"#.into()),("APPROVED_RELEASE_SOURCE_SHA".into(),sha.clone()),("APPROVED_RELEASE_BUILDER_SHA".into(),builder_sha),
+            ("OMNITERM_VPN_PROVIDER_PUBLIC_KEY".into(),base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD,[1u8;32])),
             ("GH_TOKEN".into(),"synthetic-scoped-token".into()),("RUSTFLAGS".into(),"untrusted compiler setting".into()),("NODE_OPTIONS".into(),"untrusted runtime setting".into())
         ]);
         Self {
@@ -323,6 +324,36 @@ fn actual_protected_checkout_locked_build_and_dispatch_cover_every_release_targe
     assert!(!String::from_utf8_lossy(&failure.stderr).contains("private synthetic"));
     assert_eq!(fs::read_dir(&fixture.runner).unwrap().count(), 0);
 }
+#[test]
+fn private_task_failure_is_not_misreported_as_native_tool_build_failure() {
+    let fixture = Fixture::new();
+    let failure = fixture.run("run", "linux", true, true);
+    assert!(!failure.status.success());
+    let stdout = String::from_utf8_lossy(&failure.stdout);
+    let phases: Vec<_> = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("Native release phase: "))
+        .collect();
+    assert_eq!(
+        phases,
+        [
+            "private-checkout",
+            "source-check",
+            "native-toolchain",
+            "native-tool-tests",
+            "native-tool-build",
+            "private-task"
+        ]
+    );
+    let stderr = String::from_utf8_lossy(&failure.stderr);
+    assert!(
+        stderr.contains("Private release task failed; native CLI compilation and tests passed")
+    );
+    assert!(!stderr.contains("Build command failed"));
+    assert!(!stdout.contains("private synthetic") && !stderr.contains("private synthetic"));
+    assert_eq!(fs::read_dir(&fixture.runner).unwrap().count(), 0);
+}
+
 #[test]
 fn actual_nonancestor_never_materializes_or_executes_native_source() {
     let mut fixture = Fixture::new();
