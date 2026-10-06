@@ -179,6 +179,29 @@ pub fn task_environment(parent: &Environment) -> Environment {
     }
     env
 }
+/// Match the private application context's public trust-key contract before
+/// acquiring source or compiling tools. This checks encoding, not provenance;
+/// only the operator's reviewed provider key is valid for a real application.
+fn validate_provider_public_key(env: &Environment) -> Result<()> {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    let encoded = env
+        .get("OMNITERM_VPN_PROVIDER_PUBLIC_KEY")
+        .filter(|value| !value.is_empty())
+        .ok_or("Missing OMNITERM_VPN_PROVIDER_PUBLIC_KEY; configure the reviewed application trust key")?;
+    const INVALID: &str = "Invalid OMNITERM_VPN_PROVIDER_PUBLIC_KEY; expected a canonical nonzero 32-byte base64url public key";
+    if encoded.len() != 43 {
+        return Err(INVALID);
+    }
+    let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| INVALID)?;
+    if bytes.len() != 32
+        || bytes.iter().all(|byte| *byte == 0)
+        || URL_SAFE_NO_PAD.encode(&bytes) != *encoded
+    {
+        return Err(INVALID);
+    }
+    Ok(())
+}
+
 pub fn validate_configuration(env: &Environment, command: &str) -> Result<Request> {
     if command == "agent-run" {
         crate::agent::validate_authority(env)?;
@@ -227,6 +250,9 @@ pub fn validate_configuration(env: &Environment, command: &str) -> Result<Reques
     }
     if !request.builder_sha.is_empty() && request.builder_sha != required(env, "GITHUB_SHA")? {
         return Err("Requested builder does not match workflow revision");
+    }
+    if command != "agent-run" && target != "resolve" {
+        validate_provider_public_key(env)?;
     }
     required(env, "SOURCE_DEPLOY_KEY")?;
     required(env, "SOURCE_KNOWN_HOSTS")?;
@@ -743,7 +769,7 @@ fn build_native_stage(
     if !manifest.is_file() || !src.join("tools/release-cli/Cargo.lock").is_file() {
         return Err("Pinned source does not contain native release tooling");
     }
-    println!("Native release phase: native-tool-build");
+    println!("Native release phase: native-toolchain");
     process::run(
         Path::new("rustup"),
         &git_args(&[
@@ -759,6 +785,7 @@ fn build_native_stage(
         Duration::from_secs(900),
         Some(bootstrap),
     )?;
+    println!("Native release phase: native-tool-tests");
     process::run(
         Path::new("cargo"),
         &[
@@ -773,6 +800,7 @@ fn build_native_stage(
         Duration::from_secs(900),
         Some(bootstrap),
     )?;
+    println!("Native release phase: native-tool-build");
     process::run(
         Path::new("cargo"),
         &[
@@ -875,6 +903,7 @@ fn build_native_stage(
     ] {
         task.insert(key.into(), root.join(name).to_string_lossy().into_owned());
     }
+    println!("Native release phase: private-task");
     let outcome = process::run(
         &binary,
         &arguments,
@@ -890,7 +919,12 @@ fn build_native_stage(
     {
         let _ = fs::copy(work.join("native-ios.log"), root.join("task.log"));
     }
-    outcome?;
+    outcome.map_err(|error| match error {
+        "Build command failed; inspect private diagnostics" => {
+            "Private release task failed; native CLI compilation and tests passed; inspect private diagnostics"
+        }
+        _ => error,
+    })?;
     frozen.verify()?;
     source::verify_tools(src, &checkout)?;
     source::verify(src, source_sha, &checkout, false, 0)?;
