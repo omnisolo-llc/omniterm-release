@@ -327,7 +327,12 @@ pub fn ssh_executable(env: &Environment) -> Result<PathBuf> {
 pub fn checkout_environment(env: &Environment, key: &Path, known: &Path) -> Result<Environment> {
     let mut safe = clean_environment(env);
     let ssh = ssh_executable(env)?;
-    safe.insert("GIT_SSH_COMMAND".into(),format!("{} -F {} -i {} -o IdentityAgent=none -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile={} -o GlobalKnownHostsFile={} -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ForwardAgent=no -o ClearAllForwardings=yes -o ConnectTimeout=30",quote(&ssh.to_string_lossy().replace('\\',"/")),crate::null_device(),quote(&key.to_string_lossy().replace('\\',"/")),quote(&known.to_string_lossy().replace('\\',"/")),crate::null_device()));
+    let ssh_null = if cfg!(windows) {
+        "none"
+    } else {
+        crate::null_device()
+    };
+    safe.insert("GIT_SSH_COMMAND".into(),format!("{} -F {} -i {} -o IdentityAgent=none -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile={} -o GlobalKnownHostsFile={} -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ForwardAgent=no -o ClearAllForwardings=yes -o ConnectTimeout=30",quote(&ssh.to_string_lossy().replace('\\',"/")),ssh_null,quote(&key.to_string_lossy().replace('\\',"/")),quote(&known.to_string_lossy().replace('\\',"/")),ssh_null));
     safe.insert("GIT_SSH_VARIANT".into(), "ssh".into());
     Ok(safe)
 }
@@ -912,12 +917,22 @@ fn build_native_stage(
         Duration::from_secs(timeout),
         Some(bootstrap),
     );
-    if let Ok(meta) = fs::symlink_metadata(work.join("native-ios.log"))
-        && meta.is_file()
-        && !meta.file_type().is_symlink()
-        && meta.len() <= 8 * 1024 * 1024
-    {
-        let _ = fs::copy(work.join("native-ios.log"), root.join("task.log"));
+    let task_log = root.join("task.log");
+    let task_empty = fs::symlink_metadata(&task_log)
+        .map(|meta| meta.len() == 0)
+        .unwrap_or(true);
+    if task_empty {
+        for fallback in ["native-ios.log", "build.log"] {
+            let log_path = work.join(fallback);
+            if let Ok(meta) = fs::symlink_metadata(&log_path)
+                && meta.is_file()
+                && !meta.file_type().is_symlink()
+                && meta.len() <= 8 * 1024 * 1024
+            {
+                let _ = fs::copy(&log_path, &task_log);
+                break;
+            }
+        }
     }
     outcome.map_err(|error| match error {
         "Build command failed; inspect private diagnostics" => {
