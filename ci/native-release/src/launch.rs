@@ -1078,7 +1078,7 @@ fn build_native_stage(
         let sdk_task = crate::retained_artifacts::storage_environment(env, src, source_sha)?;
         process::run(
             &binary,
-            &vec![
+            &[
                 "helper".into(),
                 "artifacts".into(),
                 "windows-sdk-get".into(),
