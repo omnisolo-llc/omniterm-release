@@ -419,6 +419,18 @@ fn seal(temp: &Path, env: &Environment) {
         eprintln!("Encrypted native diagnostics could not be retained.");
     }
 }
+
+fn strip_verbatim(path: PathBuf) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path
+    }
+}
+
 pub fn run(command: &str) -> Result<()> {
     let mut env: Environment = std::env::vars().collect();
     if command == "validate-request" {
@@ -525,17 +537,21 @@ pub fn run(command: &str) -> Result<()> {
     {
         return Err("Invalid checkout credential format");
     }
-    let runner = PathBuf::from(required(&env, "RUNNER_TEMP")?)
-        .canonicalize()
-        .map_err(|_| "Runner temporary directory missing")?;
+
+    let runner = strip_verbatim(
+        PathBuf::from(required(&env, "RUNNER_TEMP")?)
+            .canonicalize()
+            .map_err(|_| "Runner temporary directory missing")?,
+    );
     let temp = tempfile::Builder::new()
         .prefix("native-private-task-")
         .tempdir_in(&runner)
         .map_err(|_| "Private temporary directory unavailable")?;
-    let root = temp
-        .path()
-        .canonicalize()
-        .map_err(|_| "Private temporary directory unavailable")?;
+    let root = strip_verbatim(
+        temp.path()
+            .canonicalize()
+            .map_err(|_| "Private temporary directory unavailable")?,
+    );
     let key = root.join("identity");
     let known = root.join("known_hosts");
     let website_key = root.join("website-identity");
