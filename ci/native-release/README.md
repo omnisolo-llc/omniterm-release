@@ -29,6 +29,13 @@ application release implementation stays in the private source repository.
 - `bash ci/native-release/run.sh verify-ios`: retained explicit unsigned iOS
   compatibility command; requires macOS, build-only mode and ios_action=skip,
   and dispatches the canonical native run contract.
+- `bash ci/native-release/run.sh windows-sdk`: acquire the resolved application
+  source, produce its reviewed Windows SDK, retain it in the selected private
+  pipeline store, and export the complete source manifest SHA-256 after retention.
+- `bash ci/native-release/run.sh retain-artifacts`: reacquire the exact approved
+  application or agent source, freeze and test its native tools, and retain only
+  the fixed encrypted diagnostic/evaluation output or verified agent candidate.
+  The uploader receives a narrow storage environment and captured pipeline identity.
 
 All six build targets and all existing full-release stages are supported.
 Unknown targets, commands and request fields fail. There is no interpreter
@@ -69,7 +76,11 @@ RELEASE_TARGET is the canonical existing workflow stage. RELEASE_REQUEST is
 strict normalized JSON containing exactly source_sha, version, build_number,
 ios_action, automatic_release, include_selfhost and build_only. Public-only
 builder_sha, verify_target and preview_windows_self_sign are removed. Windows
-preview selection remains the existing scoped WINDOWS_PREVIEW_OUTPUT_DIR.
+preview selection sets WINDOWS_PREVIEW_OUTPUT_DIR only for the explicitly requested
+build-only Windows preview. The private producer must create the actual preview ZIP
+and SHA-256 pair. The launcher then recipient-encrypts that ZIP and removes the
+plaintext pair before the separate retention step runs. Preview retention cannot
+satisfy a production signing or publication gate.
 
 SOURCE is the canonical verified checkout path. The launcher supplies
 PUBLIC_BUILDER_SHA, RELEASE_INTEGRATION_SOURCE_REPOSITORY,
@@ -115,7 +126,13 @@ Public and private compilation use an environment allowlist and --locked.
 Child output is bounded and private; timeouts, excessive output and termination
 kill the process group or Windows Job Object, including descendants. Temporary
 source, keys, build outputs and plaintext logs are removed. Diagnostics use the
-existing Node RSA/AES-GCM sealer; only sealed output is publicly retained.
+existing Node RSA/AES-GCM sealer; sealed output is retained in selected private
+storage. The public workflows use no Actions artifact or cache storage. The
+application storage configuration has kind `application`; the agent workflow uses
+the separate `OMNI_AGENT_STORAGE_CONFIG` with kind `agent`. SDK, evaluation and agent
+candidate manifests expire after seven days; diagnostic manifests expire after one.
+Identical retries adopt the original immutable expiry. Expiry does not itself
+delete a private asset; candidate cleanup remains a separate guarded operation.
 Python and pip executables are refused by the native process runner.
 
 Failed subprocesses retain their numeric exit code (or Unix signal) in the public

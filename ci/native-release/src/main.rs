@@ -35,7 +35,7 @@ fn main() {
     }
     if command == "--help" {
         println!(
-            "omni-release-launcher resolve|run|agent-run|validate-request|approve-source|agent-source\nomni-release-launcher verify-ios\nomni-release-launcher verify-source --root PATH --sha SHA\nomni-release-launcher verify-agent-handoff --directory PATH --version VERSION --platform PLATFORM"
+            "omni-release-launcher resolve|run|agent-run|validate-request|approve-source|agent-source\nomni-release-launcher verify-ios|windows-sdk|retain-artifacts\nomni-release-launcher verify-source --root PATH --sha SHA\nomni-release-launcher verify-agent-handoff --directory PATH --version VERSION --platform PLATFORM"
         );
         return;
     }

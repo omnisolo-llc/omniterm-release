@@ -15,6 +15,8 @@ pub const PLATFORMS: &[&str] = &[
     "windows-x86_64",
     "windows-aarch64",
 ];
+pub const WORKFLOW_REF: &str =
+    "omnisolo-llc/omniterm-release/.github/workflows/omni-agent.yml@refs/heads/main";
 const MAX_BYTES: u64 = 512 * 1024 * 1024;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -66,10 +68,7 @@ pub fn validate_authority(env: &Environment) -> Result<()> {
         ("GITHUB_EVENT_NAME", "workflow_dispatch"),
         ("GITHUB_REPOSITORY", "omnisolo-llc/omniterm-release"),
         ("GITHUB_REF", "refs/heads/main"),
-        (
-            "GITHUB_WORKFLOW_REF",
-            "omnisolo-llc/omniterm-release/.github/workflows/omni-agent.yml@refs/heads/main",
-        ),
+        ("GITHUB_WORKFLOW_REF", WORKFLOW_REF),
         ("SOURCE_REPOSITORY", "omnisolo-llc/omniterm"),
         ("SOURCE_BRANCH", pin.source_branch.as_str()),
         ("RESOLVED_SOURCE_SHA", pin.source_sha.as_str()),
