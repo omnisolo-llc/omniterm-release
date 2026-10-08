@@ -77,7 +77,7 @@ Tests, signing, installation, provider evidence, and package verification remain
 mandatory. The version defaults to `0.1.0`, so select `0.1.1` explicitly for that
 release. Platform job names include a UTC workflow identifier in `yyyymmddHHmm`
 format. Supply a fresh shared app build number from `1` to `9999`.
-Configure the source repository and branch secrets for `ql-owo-lp/omniterm` and
+Configure the source repository and branch secrets for `omnisolo-llc/omniterm` and
 `main`; the launcher rejects a different source identity. `SOURCE_ENTRYPOINT` is
 no longer used; release stages execute the reviewed native CLI manifest.
 Configure repository variable `OMNITERM_VPN_PROVIDER_PUBLIC_KEY` as the canonical
@@ -199,7 +199,7 @@ to [this public release page](https://github.com/omnisolo-llc/omniterm-release/r
 Public APKs include universal and architecture-specific Android downloads; the
 Android AAB is also a public application artifact.
 
-For authorized maintainers, the [complete private release](https://github.com/ql-owo-lp/omniterm/releases)
+For authorized maintainers, the [complete private release](https://github.com/omnisolo-llc/omniterm/releases)
 contains the same public downloads plus the private Apple build and sanitized
 receipts, build diagnostics, and symbols. The signed IPA is attached there as
 `omniterm-<version>-ios-private.ipa`, with a SHA-256 sidecar. An IPA file is not a

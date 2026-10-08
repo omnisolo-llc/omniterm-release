@@ -19,7 +19,7 @@ fn authority() -> Environment {
         ("GITHUB_SHA".into(), "b".repeat(40)),
         ("GITHUB_RUN_ID".into(), "15".into()),
         ("GITHUB_RUN_ATTEMPT".into(), "1".into()),
-        ("SOURCE_REPOSITORY".into(), "ql-owo-lp/omniterm".into()),
+        ("SOURCE_REPOSITORY".into(), "omnisolo-llc/omniterm".into()),
         ("SOURCE_BRANCH".into(), "main".into()),
     ])
 }
