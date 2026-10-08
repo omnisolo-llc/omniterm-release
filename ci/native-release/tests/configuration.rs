@@ -21,7 +21,7 @@ fn env() -> Environment {
         ("GITHUB_SHA".into(), "b".repeat(40)),
         ("GITHUB_RUN_ID".into(), "42".into()),
         ("GITHUB_RUN_ATTEMPT".into(), "2".into()),
-        ("SOURCE_REPOSITORY".into(), "ql-owo-lp/omniterm".into()),
+        ("SOURCE_REPOSITORY".into(), "omnisolo-llc/omniterm".into()),
         ("SOURCE_BRANCH".into(), "main".into()),
         ("SOURCE_DEPLOY_KEY".into(), "synthetic".into()),
         ("SOURCE_KNOWN_HOSTS".into(), "synthetic".into()),

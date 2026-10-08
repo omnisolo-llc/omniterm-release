@@ -6,7 +6,7 @@ use std::{
 };
 
 fn identity() -> Value {
-    json!({"source_repository":"ql-owo-lp/omniterm","source_sha":"a".repeat(40),"builder_repository":"omnisolo-llc/omniterm-release","builder_sha":"b".repeat(40),"run_id":"123456789","attempt":"1"})
+    json!({"source_repository":"omnisolo-llc/omniterm","source_sha":"a".repeat(40),"builder_repository":"omnisolo-llc/omniterm-release","builder_sha":"b".repeat(40),"run_id":"123456789","attempt":"1"})
 }
 fn request() -> Value {
     json!({"identity":identity(),"source_ref":"refs/heads/main","stage":"rust","shard_index":0,"shard_count":2})
@@ -14,11 +14,11 @@ fn request() -> Value {
 fn observed() -> Value {
     json!({
         "execution_repository":{"full_name":"omnisolo-llc/omniterm-release","private":false,"default_branch":"main"},
-        "source_repository":{"full_name":"ql-owo-lp/omniterm","private":true,"default_branch":"main"},
+        "source_repository":{"full_name":"omnisolo-llc/omniterm","private":true,"default_branch":"main"},
         "github_actions":true,"event_name":"workflow_dispatch","execution_ref":"refs/heads/main",
         "workflow_ref":"omnisolo-llc/omniterm-release/.github/workflows/source-ci.yml@refs/heads/main",
         "builder_sha":"b".repeat(40),"run_id":"123456789","attempt":"1",
-        "source_ref":"refs/heads/main","source_head_repository":"ql-owo-lp/omniterm","source_state":"main",
+        "source_ref":"refs/heads/main","source_head_repository":"omnisolo-llc/omniterm","source_state":"main",
         "head_sha":"a".repeat(40),"base_sha":"a".repeat(40),"merge_base_sha":"a".repeat(40),"source_builder_sha":"b".repeat(40),
         "approved_source_sha":"a".repeat(40),"approved_builder_sha":"b".repeat(40),"approved_source_ref":"refs/heads/main","approved_base_sha":"a".repeat(40)
     })
@@ -147,7 +147,7 @@ fn foreign_execution_repository_or_workflow_does_not_borrow_public_privileges() 
         ),
         (
             "source_repository",
-            json!({"full_name":"ql-owo-lp/omniterm","private":false,"default_branch":"main"}),
+            json!({"full_name":"omnisolo-llc/omniterm","private":false,"default_branch":"main"}),
         ),
         ("event_name", json!("pull_request_target")),
         ("github_actions", json!(false)),

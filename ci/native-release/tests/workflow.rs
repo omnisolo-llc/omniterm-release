@@ -494,7 +494,7 @@ fn permissions_environments_and_all_task_inputs_keep_exact_step_scope() {
     for (key, value) in [
         ("RELEASE_REQUEST", "${{ toJSON(inputs) }}"),
         ("GITHUB_SHA", "${{ github.sha }}"),
-        ("SOURCE_REPOSITORY", "ql-owo-lp/omniterm"),
+        ("SOURCE_REPOSITORY", "omnisolo-llc/omniterm"),
         ("SOURCE_BRANCH", "main"),
     ] {
         assert_eq!(approval["env"][key].as_str(), Some(value));
@@ -1001,7 +1001,7 @@ fn release_defaults_and_protected_approval_documentation_remain_explicit() {
         "release-source-approval",
         "APPROVED_RELEASE_SOURCE_SHA",
         "APPROVED_RELEASE_BUILDER_SHA",
-        "https://github.com/ql-owo-lp/omniterm/releases",
+        "https://github.com/omnisolo-llc/omniterm/releases",
         "signed IPA is attached",
         "Public APKs",
         "Receipts never enter public release drafts",

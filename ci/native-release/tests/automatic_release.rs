@@ -29,7 +29,7 @@ fn automatic_request_selection_accepts_main_or_sha_without_manual_approval() {
             .env("GITHUB_SHA", "b".repeat(40))
             .env("GITHUB_RUN_ID", "42")
             .env("GITHUB_RUN_ATTEMPT", "1")
-            .env("SOURCE_REPOSITORY", "ql-owo-lp/omniterm")
+            .env("SOURCE_REPOSITORY", "omnisolo-llc/omniterm")
             .env("SOURCE_BRANCH", "main")
             .env("GITHUB_OUTPUT", &output)
             .env("RELEASE_REQUEST", json!({"source_sha":source,"builder_sha":builder,"build_only":false,"version":"0.1.1","build_number":"3","ios_action":"upload"}).to_string())

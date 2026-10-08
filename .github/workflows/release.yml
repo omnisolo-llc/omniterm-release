@@ -84,7 +84,7 @@ jobs:
         env:
           RELEASE_REQUEST: ${{ toJSON(inputs) }}
           GITHUB_SHA: ${{ github.sha }}
-          SOURCE_REPOSITORY: ql-owo-lp/omniterm
+          SOURCE_REPOSITORY: omnisolo-llc/omniterm
           SOURCE_BRANCH: main
 
   resolve:

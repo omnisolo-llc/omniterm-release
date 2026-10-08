@@ -180,7 +180,7 @@ pub fn validate_authority(env: &Environment) -> Result<()> {
             "GITHUB_WORKFLOW_REF",
             "omnisolo-llc/omniterm-release/.github/workflows/release.yml@refs/heads/main",
         ),
-        ("SOURCE_REPOSITORY", "ql-owo-lp/omniterm"),
+        ("SOURCE_REPOSITORY", "omnisolo-llc/omniterm"),
         ("SOURCE_BRANCH", "main"),
     ] {
         if env.get(name).map(String::as_str) != Some(expected) {
