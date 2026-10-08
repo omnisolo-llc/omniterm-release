@@ -122,83 +122,123 @@ function exactIds(actual, expected) {
     [...actual].sort().every((value, index) => value === [...expected].sort()[index]);
 }
 
+function sessionActive(record) {
+  return !record.closeInitiated && !record.transportClosed && !record.closed &&
+    record.token.active && !record.relay.closed &&
+    record.token.expiresAt > Date.now() && record.relay.expiresAt > Date.now();
+}
+
+function closeSessionWork(record) {
+  for (const resource of [record.incomingGroup, record.outgoingGroup,
+    record.incoming, record.remote, record.subscriberBroadcast]) {
+    try { resource?.close(); } catch {}
+  }
+}
+
 function finishSession(record) {
-  if (record.closed || !record.transportClosed) return;
+  if (record.closed || !record.transportClosed || !record.applicationFinished) return;
   record.closed = true;
-  record.resolveFinished();
+  record.resolveDrained();
   record.token.sessions.delete(record);
   record.relay.sessions.delete(record);
   record.owner.activeSessions.delete(record);
   try { record.connection?.close(); } catch {}
-  record.subscriberBroadcast?.close();
+  closeSessionWork(record);
   if (record.token.role === 'publish' && record.relay.publisherToken === record.token.tokenId) {
     record.relay.publisherToken = null;
     record.relay.track.close();
   }
 }
 
-function closeSession(record, reason) {
-  if (record.closed) return Promise.resolve(true);
-  if (record.closePromise) return record.closePromise;
-  record.closePromise = (async () => {
-    record.closeInitiated = true;
-    record.closeReason = reason;
-    try { record.connection?.close(); } catch {}
-    if (!record.closeRequested && !record.transportClosed) {
-      try { record.transport.close({closeCode: 0, reason}); } catch {}
-    }
-    let timer;
-    try {
-      return await Promise.race([
-        record.finished.then(() => true),
-        new Promise(resolve => {
-          timer = setTimeout(() => resolve(false), CLOSE_TIMEOUT_MS);
-          timer.unref?.();
-        }),
-      ]);
-    } finally { clearTimeout(timer); }
-  })();
-  return record.closePromise;
+async function waitForDrain(promise, deadline = Date.now() + CLOSE_TIMEOUT_MS) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise.then(() => true, () => false),
+      new Promise(resolve => {
+        timer = setTimeout(() => resolve(false), Math.max(0, deadline - Date.now()));
+        timer.unref?.();
+      }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
+
+function requestSessionClose(record, reason) {
+  record.closeInitiated = true;
+  record.closeReason ??= reason;
+  closeSessionWork(record);
+  try { record.connection?.close(); } catch {}
+  if (!record.closeRequested && !record.transportClosed) {
+    try { record.transport.close({closeCode: 0, reason: record.closeReason}); } catch {}
+  }
+}
+
+async function closeSession(record, reason) {
+  requestSessionClose(record, reason);
+  if (record.transportClosed) return true;
+  record.closePromise ??= waitForDrain(record.finished);
+  const pending = record.closePromise;
+  const confirmed = await pending;
+  if (!confirmed && record.closePromise === pending) record.closePromise = null;
+  return confirmed;
 }
 
 async function forwardPublisher(record) {
-  const remote = record.connection.consume(record.relay.broadcastPath);
-  const incoming = remote.subscribe('terminal', {ordered: true, latencyMax: 5000});
-  await incoming.info();
-  while (!record.closed && !record.relay.closed) {
-    const group = await Promise.race([
-      incoming.recvGroup(), record.finished.then(() => undefined),
-    ]);
-    if (!group || record.closed) break;
-    const outgoing = record.relay.track.appendGroup();
-    try {
-      for (;;) {
-        const frame = await Promise.race([
-          group.readFrame(), record.finished.then(() => undefined),
-        ]);
-        if (!frame || record.closed) break;
-        const payloadBytes=frame.payload?.byteLength;
-        if(!Number.isSafeInteger(payloadBytes)||payloadBytes<1||payloadBytes>MAX_FRAME_BYTES){
-          await record.relay.closeForUsage('invalid_moq_frame');
-          return;
-        }
-        const viewerCopies=[...record.relay.tokens.values()].filter(token=>
-          token.active&&token.role==='subscribe'&&token.sessions.size>0).length;
-        let uncharged=payloadBytes*(viewerCopies+1);
-        while(uncharged>0){
-          const charge=Math.min(uncharged,MAX_USAGE_EVENT_BYTES);
-          if(!await record.relay.chargeUsage(record.relay,charge)){
-            await record.relay.closeForUsage('moq_usage_or_quota_unavailable');
+  if (!sessionActive(record)) return;
+  const remote = record.remote = record.connection.consume(record.relay.broadcastPath);
+  const incoming = record.incoming = remote.subscribe('terminal', {ordered: true, latencyMax: 5000});
+  try {
+    await incoming.info();
+    if (!sessionActive(record)) return;
+    while (sessionActive(record)) {
+      // Close the owned readers to unblock them, then join their actual
+      // settlement. Racing native closure would abandon a live continuation.
+      const group = await incoming.recvGroup();
+      if (!sessionActive(record) || !group) {
+        group?.close();
+        break;
+      }
+      record.incomingGroup = group;
+      const outgoing = record.outgoingGroup = record.relay.track.appendGroup();
+      try {
+        for (;;) {
+          const frame = await group.readFrame();
+          if (!sessionActive(record) || !frame) break;
+          const payloadBytes = frame.payload?.byteLength;
+          if (!Number.isSafeInteger(payloadBytes) || payloadBytes < 1 || payloadBytes > MAX_FRAME_BYTES) {
+            // The room drain joins this task; this task must not await itself.
+            void record.relay.closeForUsage('invalid_moq_frame');
             return;
           }
-          uncharged-=charge;
+          const viewerCopies = [...record.relay.tokens.values()].filter(token =>
+            token.active && token.role === 'subscribe' && token.sessions.size > 0).length;
+          let uncharged = payloadBytes * (viewerCopies + 1);
+          while (uncharged > 0) {
+            if (!sessionActive(record)) return;
+            const charge = Math.min(uncharged, MAX_USAGE_EVENT_BYTES);
+            const charged = await record.relay.chargeUsage(record.relay, charge);
+            if (!sessionActive(record)) return;
+            if (!charged) {
+              void record.relay.closeForUsage('moq_usage_or_quota_unavailable');
+              return;
+            }
+            uncharged -= charge;
+          }
+          if (!sessionActive(record)) return;
+          outgoing.writeFrame(frame);
         }
-        outgoing.writeFrame(frame);
+      } finally {
+        group.close();
+        outgoing.close();
+        record.incomingGroup = null;
+        record.outgoingGroup = null;
       }
-    } finally {
-      group.close();
-      outgoing.close();
     }
+  } finally {
+    incoming.close();
+    remote.close();
+    record.incoming = null;
+    record.remote = null;
   }
 }
 
@@ -247,9 +287,10 @@ export async function createMoqRelay({
   const relayScopes = new Map();
   const tombstones = new Map();
   const closedScopes = new Map();
+  const pendingRelayScopes = new Map();
   const tokenPaths = new Map();
   const activeSessions = new Set();
-  const pendingSessions = new WeakMap();
+  const sessionsByTransport = new WeakMap();
   let stopping = false;
   let closePromise;
   let sweep;
@@ -290,11 +331,16 @@ export async function createMoqRelay({
 
   async function verifyWorkerRoom(relay) {
     if (!usage || !usageSecret) return !managedUsageRequired;
-    const heartbeatId=randomUUID().replaceAll('-','');
-    const value=await workerUsageRequest('heartbeat',{share_id:relay.shareId,
-      session_epoch:relay.epoch,heartbeat_id:heartbeatId});
-    return value?.status==='active'&&value.share_id===relay.shareId&&
-      value.session_epoch===relay.epoch&&value.heartbeat_id===heartbeatId&&Object.keys(value).length===4;
+    const pending = (async () => {
+      const heartbeatId = randomUUID().replaceAll('-', '');
+      const value = await workerUsageRequest('heartbeat', {share_id: relay.shareId,
+        session_epoch: relay.epoch, heartbeat_id: heartbeatId});
+      return value?.status === 'active' && value.share_id === relay.shareId &&
+        value.session_epoch === relay.epoch && value.heartbeat_id === heartbeatId && Object.keys(value).length === 4;
+    })();
+    relay.pendingChecks.add(pending);
+    try { return await pending; }
+    finally { relay.pendingChecks.delete(pending); }
   }
 
   async function chargeWorkerUsage(relay, byteCount) {
@@ -338,12 +384,16 @@ export async function createMoqRelay({
     onSessionVisitor(args);
     const token = typeof args.path === 'string' ? tokenPaths.get(args.path.slice(1)) : null;
     const transport = args.session.jsobj;
-    if (!token || !transport) return;
+    if (!transport) return;
+    if (!token) {
+      try { transport.close({closeCode: 0, reason: 'MoQ token is inactive'}); } catch {}
+      return;
+    }
     const admitted = token.active && !token.relay.closed &&
       token.expiresAt > Date.now() && token.sessions.size === 0 && activeSessions.size < maxSessions;
-    const record = createSessionRecord(token, transport, admitted);
-    pendingSessions.set(transport, record);
-    if (!admitted) void closeSession(record, 'MoQ token is inactive');
+    // Register the application task in the native admission callback, before
+    // token-stream cancellation can discard a queued session notification.
+    startTokenSession(token, transport, admitted);
   };
   const listener = createServer({cert: certificate, key: privateKey, maxHeaderSize: 8192,
     requestTimeout: 10000, headersTimeout: 8000, keepAliveTimeout: 1000}, async (request, response) => {
@@ -374,36 +424,51 @@ export async function createMoqRelay({
               body.maxBytes > 1_000_000_000_000 || body.usageOrigin !== usage.origin))) {
           return json(response, {error: 'invalid_relay_scope'}, 400);
         }
-        if (relays.size >= maxRelays) return json(response, {error: 'relay_capacity'}, 429);
-        if (relayScopes.has(scopeKey(body.shareId, body.epoch))) {
+        const key = scopeKey(body.shareId, body.epoch);
+        if (closedScopes.has(key)) return json(response, {error: 'moq_owner_scope_inactive'}, 410);
+        if (relays.size + pendingRelayScopes.size >= maxRelays) return json(response, {error: 'relay_capacity'}, 429);
+        if (relayScopes.has(key) || pendingRelayScopes.has(key)) {
           return json(response, {error: 'relay_scope_exists'}, 409);
         }
-        const relayId = randomBytes(24).toString('base64url');
-        const broadcastPath = `omniterm/${body.epoch}`;
-        const broadcast = new Moq.Broadcast.Producer();
-        const maxBytes = Number.isSafeInteger(body.maxBytes) && body.maxBytes > 0
-          ? Math.min(body.maxBytes, 1_000_000_000_000) : 100_000_000;
-        const relay = {relayId, shareId: body.shareId, epoch: body.epoch, maxBytes,
-          bytesCharged: 0, chargeUsage: chargeWorkerUsage,
-          closeForUsage: reason => closeRelay(relay, reason),
-          expiresAt: body.expiresAt, closed: false, tokens: new Map(), closedTokens: new Set(),
-          sessions: new Set(), publisherToken: null, broadcast, broadcastPath,
-          track: broadcast.createTrack('terminal', {ordered: true, latencyMax: 5000}),
-          expiryTimer: null};
-        if(!await verifyWorkerRoom(relay))return json(response,{error:'moq_owner_scope_inactive'},410);
-        relay.expiryTimer = setTimeout(() => void closeRelay(relay, 'room_expired'),
-          Math.max(1, relay.expiresAt - Date.now()));
-        relay.expiryTimer.unref?.();
-        relay.heartbeatTimer=setInterval(()=>{
-          if(!relay.closed)void verifyWorkerRoom(relay).then(active=>{
-            if(!active)void closeRelay(relay,'worker_owner_or_quota_inactive');
-          });
-        },15000);
-        relay.heartbeatTimer.unref?.();
-        relays.set(relayId, relay);
-        relayScopes.set(scopeKey(body.shareId, body.epoch), relayId);
-        return json(response, {relayId, shareId: relay.shareId, epoch: relay.epoch,
-          expiresAt: relay.expiresAt, maxBytes: relay.maxBytes, publicOrigin: origin}, 201);
+        let resolveAllocation;
+        const allocation = new Promise(resolve => { resolveAllocation = resolve; });
+        pendingRelayScopes.set(key, allocation);
+        try {
+          const relayId = randomBytes(24).toString('base64url');
+          const broadcastPath = `omniterm/${body.epoch}`;
+          const broadcast = new Moq.Broadcast.Producer();
+          const maxBytes = Number.isSafeInteger(body.maxBytes) && body.maxBytes > 0
+            ? Math.min(body.maxBytes, 1_000_000_000_000) : 100_000_000;
+          const relay = {relayId, shareId: body.shareId, epoch: body.epoch, maxBytes,
+            bytesCharged: 0, chargeUsage: chargeWorkerUsage,
+            closeForUsage: reason => closeRelay(relay, reason),
+            expiresAt: body.expiresAt, closed: false, tokens: new Map(), closedTokens: new Set(),
+            sessions: new Set(), pendingChecks: new Set(), publisherToken: null, broadcast, broadcastPath,
+            track: broadcast.createTrack('terminal', {ordered: true, latencyMax: 5000}),
+            expiryTimer: null};
+          const active = await verifyWorkerRoom(relay);
+          if (!active || stopping || closedScopes.has(key) || relay.expiresAt <= Date.now()) {
+            relay.track.close();
+            relay.broadcast.close();
+            return json(response, {error: 'moq_owner_scope_inactive'}, 410);
+          }
+          relay.expiryTimer = setTimeout(() => void closeRelay(relay, 'room_expired'),
+            Math.max(1, relay.expiresAt - Date.now()));
+          relay.expiryTimer.unref?.();
+          relay.heartbeatTimer = setInterval(() => {
+            if (!relay.closed) void verifyWorkerRoom(relay).then(active => {
+              if (!active) void closeRelay(relay, 'worker_owner_or_quota_inactive');
+            });
+          }, 15000);
+          relay.heartbeatTimer.unref?.();
+          relays.set(relayId, relay);
+          relayScopes.set(key, relayId);
+          return json(response, {relayId, shareId: relay.shareId, epoch: relay.epoch,
+            expiresAt: relay.expiresAt, maxBytes: relay.maxBytes, publicOrigin: origin}, 201);
+        } finally {
+          pendingRelayScopes.delete(key);
+          resolveAllocation();
+        }
       }
 
       const tokenMatch = /^\/v1\/relays\/([A-Za-z0-9_-]{1,128})\/tokens$/.exec(url.pathname);
@@ -428,21 +493,27 @@ export async function createMoqRelay({
         const tokenId = randomUUID();
         const token = {tokenId, secret: randomBytes(32).toString('base64url'),
           participantId: body.participantId, role: body.role, expiresAt, relay,
-          active: true, sessions: new Set(), expiryTimer: null};
-        token.expiryTimer = setTimeout(() => { token.active = false; },
+          active: true, sessions: new Set(), expiryTimer: null, streamDrained: false,
+          reader: null, streamTask: null, cancelPromise: null, closePromise: null};
+        token.expiryTimer = setTimeout(() => void closeToken(token, 'token_expired'),
           Math.max(1, expiresAt - Date.now()));
         token.expiryTimer.unref?.();
         relay.tokens.set(tokenId, token);
         tokenPaths.set(token.secret, token);
-        const reader = h3.sessionStream(`/${token.secret}`).getReader();
-        void (async () => {
+        const reader = token.reader = h3.sessionStream(`/${token.secret}`).getReader();
+        token.streamTask = (async () => {
           try {
-            while (!stopping) {
+            while (!stopping && token.active) {
               const next = await reader.read();
               if (next.done) break;
-              void serveTokenSession(token, next.value);
+              startTokenSession(token, next.value, token.active && !relay.closed &&
+                token.expiresAt > Date.now() && token.sessions.size === 0 && activeSessions.size < maxSessions);
             }
-          } catch {} finally { reader.releaseLock(); }
+          } catch {} finally {
+            reader.releaseLock();
+            token.reader = null;
+            token.streamDrained = true;
+          }
         })();
         return json(response, {relayId: relay.relayId, shareId: relay.shareId,
           epoch: relay.epoch, tokenId, secret: token.secret, role: token.role,
@@ -455,34 +526,11 @@ export async function createMoqRelay({
         if (!shareIdPattern.test(body.shareId ?? '') || !epochPattern.test(body.epoch ?? '')) {
           return json(response, {error: 'invalid_close_scope'}, 400);
         }
-        const key = scopeKey(body.shareId, body.epoch);
-        const relayId = relayScopes.get(key);
-        const relay = relayId ? relays.get(relayId) : null;
-        if (!relay) {
-          const prior = closedScopes.get(key);
-          return json(response, {relayId: prior?.relayId ?? null, shareId: body.shareId,
-            epoch: body.epoch, closedTokenIds: prior?.closedTokenIds ?? [], endRoom: true});
-        }
-        relay.closed = true;
-        const tokenIds = [...relay.tokens.keys()].sort();
-        const results = await Promise.all([...relay.tokens.values()].map(token =>
-          closeToken(token, 'owner_cutoff')));
-        const closedTokenIds = tokenIds.filter(id => relay.closedTokens.has(id));
-        if (results.some(result => !result) || !exactIds(closedTokenIds, tokenIds)) {
-          return json(response, {error: 'active_session_close_unconfirmed', relayId: relay.relayId,
-            shareId: relay.shareId, epoch: relay.epoch, closedTokenIds, endRoom: true}, 503);
-        }
-        clearTimeout(relay.expiryTimer);
-        clearInterval(relay.heartbeatTimer);
-        relay.broadcast.close(new Error('owner_cutoff'));
-        const prior = {relayId: relay.relayId, shareId: relay.shareId,
-          epoch: relay.epoch, closedTokenIds, expiresAt: Date.now() + MAX_TOMBSTONE_MS};
-        tombstones.set(relay.relayId, prior);
-        closedScopes.set(key, prior);
-        relays.delete(relay.relayId);
-        relayScopes.delete(key);
-        return json(response, {relayId: relay.relayId, shareId: relay.shareId,
-          epoch: relay.epoch, closedTokenIds, endRoom: true});
+        const cutoff = fenceRoomScope(body.shareId, body.epoch, 'owner_cutoff');
+        const confirmed = await drainRoomScope(cutoff);
+        return json(response, confirmed ? roomProof(cutoff) : {
+          error: 'active_session_close_unconfirmed', ...roomProof(cutoff),
+        }, confirmed ? 200 : 503);
       }
 
       const closeMatch = /^\/v1\/relays\/([A-Za-z0-9_-]{1,128})\/sessions\/close$/.exec(url.pathname);
@@ -504,12 +552,19 @@ export async function createMoqRelay({
             new Set(body.tokenIds).size !== body.tokenIds.length || typeof body.endRoom !== 'boolean') {
           return json(response, {error: 'invalid_close_scope'}, 400);
         }
-        const selected = body.endRoom ? [...relay.tokens.keys()] : body.tokenIds;
+        const cutoff = closedScopes.get(scopeKey(relay.shareId, relay.epoch));
+        const selected = body.endRoom ? cutoff?.tokenIds ?? [...relay.tokens.keys()] : body.tokenIds;
         if ((body.endRoom && !exactIds(body.tokenIds, selected)) ||
             selected.some(id => !relay.tokens.has(id) && !relay.closedTokens.has(id))) {
           return json(response, {error: 'token_scope_mismatch'}, 409);
         }
-        if (body.endRoom) relay.closed = true;
+        if (body.endRoom) {
+          const cutoff = fenceRoomScope(relay.shareId, relay.epoch, 'owner_cutoff');
+          const confirmed = await drainRoomScope(cutoff);
+          return json(response, confirmed ? roomProof(cutoff) : {
+            error: 'active_session_close_unconfirmed', ...roomProof(cutoff),
+          }, confirmed ? 200 : 503);
+        }
         const results = await Promise.all(selected.map(id => {
           const token = relay.tokens.get(id);
           return token ? closeToken(token, 'owner_cutoff') : Promise.resolve(true);
@@ -518,18 +573,6 @@ export async function createMoqRelay({
         if (results.some(result => !result) || !exactIds(closedTokenIds, selected)) {
           return json(response, {error: 'active_session_close_unconfirmed', relayId: relay.relayId,
             shareId: relay.shareId, epoch: relay.epoch, closedTokenIds}, 503);
-        }
-        if (body.endRoom) {
-          clearTimeout(relay.expiryTimer);
-          clearInterval(relay.heartbeatTimer);
-          relay.broadcast.close(new Error('owner_cutoff'));
-          const prior = {relayId: relay.relayId, shareId: relay.shareId,
-            epoch: relay.epoch, closedTokenIds: [...closedTokenIds].sort(),
-            expiresAt: Date.now() + MAX_TOMBSTONE_MS};
-          tombstones.set(relay.relayId, prior);
-          closedScopes.set(scopeKey(relay.shareId, relay.epoch), prior);
-          relays.delete(relay.relayId);
-          relayScopes.delete(scopeKey(relay.shareId, relay.epoch));
         }
         return json(response, {relayId: relay.relayId, shareId: relay.shareId,
           epoch: relay.epoch, closedTokenIds: [...closedTokenIds].sort(), endRoom: body.endRoom});
@@ -541,29 +584,36 @@ export async function createMoqRelay({
     }
   });
 
-  async function serveTokenSession(token, transport) {
-    const record = pendingSessions.get(transport) ?? createSessionRecord(token, transport,
-      token.active && !token.relay.closed && token.expiresAt > Date.now() &&
-      token.sessions.size === 0 && activeSessions.size < maxSessions);
-    pendingSessions.delete(transport);
-    const relay = record.relay;
-    if (!record.admitted || record.closed || !token.active || relay.closed) {
-      await closeSession(record, 'MoQ token is inactive');
-      return;
-    }
+  function startTokenSession(token, transport, admitted) {
+    const existing = sessionsByTransport.get(transport);
+    if (existing) return existing;
+    const record = createSessionRecord(token, transport, admitted);
+    sessionsByTransport.set(transport, record);
+    record.applicationTask = serveTokenSession(record);
+    record.applicationTask.then(() => {
+      record.applicationFinished = true;
+      finishSession(record);
+    }, () => {
+      requestSessionClose(record, 'MoQ session failed');
+      record.applicationFinished = true;
+      finishSession(record);
+    });
+    return record;
+  }
+
+  async function serveTokenSession(record) {
+    const {token, transport, relay} = record;
     try {
+      if (!record.admitted || !sessionActive(record)) return;
       await transport.ready;
-      if (!token.active || relay.closed || Date.now() >= token.expiresAt) {
-        await closeSession(record, 'MoQ token is inactive');
-        return;
-      }
-      record.connection = await Moq.Connection.accept(transport,
+      if (!sessionActive(record)) return;
+      const connection = await Moq.Connection.accept(transport,
         new URL(`${origin}/${token.secret}`), {version: VERSION, discovery: false});
-      record.connection.closed.then(() => finishSession(record), () => finishSession(record));
-      if (record.closed || !token.active || relay.closed) {
-        await closeSession(record, 'MoQ token is inactive');
+      if (!sessionActive(record)) {
+        try { connection.close(); } catch {}
         return;
       }
+      record.connection = connection;
       if (token.role === 'publish') {
         if (relay.publisherToken && relay.publisherToken !== token.tokenId) {
           await closeSession(record, 'MoQ publisher is already connected');
@@ -584,17 +634,19 @@ export async function createMoqRelay({
       await closeSession(record, 'MoQ session failed');
     } finally {
       // `closed` is a Promise, not evidence that native closure occurred.
-      // Only its settlement retires the authoritative active-session record.
+      // Native shutdown and the settled application task are both required.
+      closeSessionWork(record);
       if (!record.transportClosed) await closeSession(record, 'protocol_finished');
-      finishSession(record);
     }
   }
 
   function createSessionRecord(token, transport, admitted) {
     let resolveFinished;
+    let resolveDrained;
     const record = {owner: {activeSessions}, token, relay: token.relay, transport,
-      connection: null, closed: false, admitted,
-      finished: new Promise(resolve => { resolveFinished = resolve; }), resolveFinished};
+      connection: null, closed: false, admitted, applicationFinished: false,
+      finished: new Promise(resolve => { resolveFinished = resolve; }), resolveFinished,
+      drained: new Promise(resolve => { resolveDrained = resolve; }), resolveDrained};
     // Guard only this owned transport instance; never patch global APIs.
     const nativeClose = transport.close.bind(transport);
     transport.close = (...args) => {
@@ -608,36 +660,111 @@ export async function createMoqRelay({
     token.sessions.add(record);
     token.relay.sessions.add(record);
     activeSessions.add(record);
-    transport.closed.then(() => {
+    const onTransportClosed = () => {
       record.transportClosed = true;
+      requestSessionClose(record, 'transport_closed');
+      record.resolveFinished();
       finishSession(record);
-    }, () => {
-      record.transportClosed = true;
-      finishSession(record);
-    });
+    };
+    transport.closed.then(onTransportClosed, onTransportClosed);
     return record;
   }
 
-  async function closeToken(token, reason) {
+  async function closeToken(token, reason, deadline = Date.now() + CLOSE_TIMEOUT_MS) {
     token.active = false;
     clearTimeout(token.expiryTimer);
-    const closed = await Promise.all([...token.sessions].map(record => closeSession(record, reason)));
-    const confirmed = closed.every(Boolean) && [...token.sessions].every(record => record.closed);
-    if (confirmed) {
-      token.relay.tokens.delete(token.tokenId);
-      token.relay.closedTokens.add(token.tokenId);
-      tokenPaths.delete(token.secret);
+    for (const record of token.sessions) requestSessionClose(record, reason);
+    if (token.closePromise) return token.closePromise;
+    const pending = (async () => {
+      if (token.reader && !token.cancelPromise) {
+        try { token.cancelPromise = token.reader.cancel(); }
+        catch { token.cancelPromise = Promise.reject(new Error('token_stream_cancel_failed')); }
+        token.cancelPromise.catch(() => { token.cancelPromise = null; });
+      }
+      for (;;) {
+        const records = [...token.sessions];
+        for (const record of records) requestSessionClose(record, reason);
+        const drained = await waitForDrain(Promise.all([
+          token.streamTask, token.cancelPromise, ...records.map(record => record.drained),
+        ]), deadline);
+        if (!drained) return false;
+        if (token.sessions.size !== 0) continue;
+        if (!token.streamDrained) return false;
+        token.relay.tokens.delete(token.tokenId);
+        token.relay.closedTokens.add(token.tokenId);
+        tokenPaths.delete(token.secret);
+        return true;
+      }
+    })();
+    token.closePromise = pending;
+    const confirmed = await pending;
+    if (!confirmed && token.closePromise === pending) token.closePromise = null;
+    return confirmed;
+  }
+
+  function roomProof(cutoff) {
+    return {relayId: cutoff.relayId, shareId: cutoff.shareId, epoch: cutoff.epoch,
+      closedTokenIds: cutoff.closedTokenIds, endRoom: true};
+  }
+
+  function fenceRoomScope(shareId, epoch, reason) {
+    const key = scopeKey(shareId, epoch);
+    const relay = relays.get(relayScopes.get(key));
+    let cutoff = closedScopes.get(key);
+    if (!cutoff) {
+      cutoff = {key, shareId, epoch, reason, relayId: relay?.relayId ?? null,
+        tokenIds: relay ? [...relay.tokens.keys()].sort() : null, closedTokenIds: [],
+        confirmed: false, expiresAt: Infinity, closePromise: null};
+      // A missing relay can still be awaiting Worker authority. This fence
+      // forbids installation after that await and remains until drain is proved.
+      closedScopes.set(key, cutoff);
     }
+    if (relay) {
+      relay.closed = true;
+      clearTimeout(relay.expiryTimer);
+      clearInterval(relay.heartbeatTimer);
+      try { relay.broadcast.close(new Error(reason)); } catch {}
+      for (const token of relay.tokens.values()) {
+        token.active = false;
+        for (const record of token.sessions) requestSessionClose(record, reason);
+      }
+    }
+    return cutoff;
+  }
+
+  async function drainRoomScope(cutoff) {
+    if (cutoff.confirmed) return true;
+    if (cutoff.closePromise) return cutoff.closePromise;
+    const pending = (async () => {
+      const deadline = Date.now() + CLOSE_TIMEOUT_MS;
+      const allocation = pendingRelayScopes.get(cutoff.key);
+      if (allocation && !await waitForDrain(allocation, deadline)) return false;
+      const relay = relays.get(relayScopes.get(cutoff.key));
+      if (relay) {
+        cutoff.relayId = relay.relayId;
+        cutoff.tokenIds ??= [...relay.tokens.keys()].sort();
+        const results = await Promise.all([...relay.tokens.values()].map(token =>
+          closeToken(token, cutoff.reason, deadline)));
+        cutoff.closedTokenIds = cutoff.tokenIds.filter(id => relay.closedTokens.has(id));
+        if (results.some(result => !result) || relay.sessions.size !== 0 ||
+            !exactIds(cutoff.closedTokenIds, cutoff.tokenIds) ||
+            !await waitForDrain(Promise.all([...relay.pendingChecks]), deadline)) return false;
+        relays.delete(relay.relayId);
+        relayScopes.delete(cutoff.key);
+      }
+      cutoff.confirmed = true;
+      cutoff.expiresAt = Date.now() + MAX_TOMBSTONE_MS;
+      if (cutoff.relayId) tombstones.set(cutoff.relayId, cutoff);
+      return true;
+    })();
+    cutoff.closePromise = pending;
+    const confirmed = await pending;
+    if (!confirmed && cutoff.closePromise === pending) cutoff.closePromise = null;
     return confirmed;
   }
 
   async function closeRelay(relay, reason) {
-    if (!relay.closed) relay.closed = true;
-    clearTimeout(relay.expiryTimer);
-    clearInterval(relay.heartbeatTimer);
-    relay.broadcast.close(new Error(reason));
-    const results = await Promise.all([...relay.tokens.values()].map(token => closeToken(token, reason)));
-    return results.every(Boolean) && relay.sessions.size === 0;
+    return drainRoomScope(fenceRoomScope(relay.shareId, relay.epoch, reason));
   }
 
   h3.startServer();
@@ -652,13 +779,12 @@ export async function createMoqRelay({
   sweep = setInterval(() => {
     const now = Date.now();
     for (const [id, tombstone] of tombstones) if (tombstone.expiresAt <= now) tombstones.delete(id);
-    for (const [key, tombstone] of closedScopes) if (tombstone.expiresAt <= now) closedScopes.delete(key);
-    for (const [id, relay] of relays) {
+    for (const [key, tombstone] of closedScopes) {
+      if (tombstone.confirmed && tombstone.expiresAt <= now) closedScopes.delete(key);
+    }
+    for (const relay of relays.values()) {
       if (relay.expiresAt <= now) void closeRelay(relay, 'room_expired');
-      if (relay.closed && !relay.sessions.size) {
-        relays.delete(id);
-        relayScopes.delete(scopeKey(relay.shareId, relay.epoch));
-      }
+      if (relay.closed) void closeRelay(relay, 'cutoff_retry');
     }
   }, 30000);
   sweep.unref?.();
@@ -669,6 +795,7 @@ export async function createMoqRelay({
     clearInterval(sweep);
     closePromise = (async () => {
       const results = await Promise.all([...relays.values()].map(relay => closeRelay(relay, 'service_shutdown')));
+      const allocationsDrained = await waitForDrain(Promise.all([...pendingRelayScopes.values()]));
       await new Promise(resolve => listener.close(resolve));
       h3.stopServer();
       let timer;
@@ -677,7 +804,7 @@ export async function createMoqRelay({
           h3.closed.then(() => true, () => false),
           new Promise(resolve => { timer = setTimeout(() => resolve(false), CLOSE_TIMEOUT_MS); }),
         ]);
-        return stopped && results.every(Boolean);
+        return stopped && allocationsDrained && results.every(Boolean);
       } finally { clearTimeout(timer); }
     })();
     return closePromise;

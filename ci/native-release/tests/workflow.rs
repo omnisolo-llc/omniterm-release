@@ -65,6 +65,8 @@ fn every_public_workflow_uses_native_launch_and_contracts_without_legacy_runtime
             "validate-request"
         } else if name == "resolve" {
             "resolve"
+        } else if name == "windows_sdk" {
+            "windows-sdk"
         } else {
             "run"
         };
@@ -115,11 +117,15 @@ fn complete_same_run_release_graph_keeps_all_evidence_and_approval_edges() {
     let edges = [
         ("release_source_approval", vec![]),
         ("resolve", vec!["release_source_approval"]),
-        ("integration", vec!["resolve"]),
-        ("verify", vec!["resolve"]),
+        ("windows_sdk", vec!["resolve"]),
+        ("integration", vec!["resolve", "windows_sdk"]),
+        ("verify", vec!["resolve", "windows_sdk"]),
         ("validate", vec!["resolve", "integration"]),
         ("downloads", vec!["resolve", "validate"]),
-        ("windows_download", vec!["resolve", "validate"]),
+        (
+            "windows_download",
+            vec!["resolve", "validate", "windows_sdk"],
+        ),
         ("ios", vec!["resolve", "validate"]),
         (
             "package_signatures",
@@ -300,6 +306,7 @@ fn permissions_environments_and_all_task_inputs_keep_exact_step_scope() {
             "",
         ),
         ("resolve", "read", false, "downloads", "resolve"),
+        ("windows_sdk", "read", false, "downloads", "windows"),
         ("integration", "read", false, "downloads", "integration"),
         ("verify", "read", false, "downloads", "${{ matrix.target }}"),
         ("validate", "write", false, "downloads", "validate"),
@@ -432,18 +439,22 @@ fn permissions_environments_and_all_task_inputs_keep_exact_step_scope() {
                     Some(format!("${{{{ secrets.{key} }}}}").as_str())
                 );
             }
-            assert_eq!(
-                env["OMNITERM_VPN_PROVIDER_PUBLIC_KEY"].as_str(),
-                Some("${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}")
-            );
-            for key in [
-                "OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64",
-                "OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64",
-            ] {
+            if name != "windows_sdk" {
                 assert_eq!(
-                    env[key].as_str(),
-                    Some(format!("${{{{ vars.{key} }}}}").as_str())
+                    env["OMNITERM_VPN_PROVIDER_PUBLIC_KEY"].as_str(),
+                    Some("${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}")
                 );
+                for key in [
+                    "OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64",
+                    "OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64",
+                ] {
+                    assert_eq!(
+                        env[key].as_str(),
+                        Some(format!("${{{{ vars.{key} }}}}").as_str())
+                    );
+                }
+            } else {
+                assert!(env["OMNITERM_VPN_PROVIDER_PUBLIC_KEY"].is_null());
             }
         } else {
             assert!(
@@ -452,8 +463,20 @@ fn permissions_environments_and_all_task_inputs_keep_exact_step_scope() {
                     && env["OMNITERM_VPN_PROVIDER_PUBLIC_KEY"].is_null()
             );
         }
-        if ["resolve", "verify"].contains(&name) {
+        if name == "resolve" {
             assert!(env["STORAGE_CONFIG"].is_null() && env["BUILD_CONFIG"].is_null());
+        } else if name == "verify" {
+            assert_eq!(
+                env["STORAGE_CONFIG"].as_str(),
+                Some("${{ matrix.target == 'windows' && secrets.STORAGE_CONFIG || '' }}")
+            );
+            assert!(env["BUILD_CONFIG"].is_null());
+        } else if name == "windows_sdk" {
+            assert_eq!(
+                env["STORAGE_CONFIG"].as_str(),
+                Some("${{ secrets.STORAGE_CONFIG }}")
+            );
+            assert!(env["BUILD_CONFIG"].is_null());
         } else {
             assert_eq!(
                 env["STORAGE_CONFIG"].as_str(),
@@ -753,37 +776,69 @@ fn fixture_trust_files_and_publication_credentials_are_scoped_to_their_stages() 
     require_text(&jobs["external_tests"], "RELEASE_METADATA_READ_TOKEN");
 }
 #[test]
-fn only_sealed_diagnostics_and_explicit_preview_packages_are_public_artifacts() {
+fn all_release_evidence_is_encrypted_and_retained_through_selected_private_storage() {
     let w = workflow("release");
     for (name, job) in w["jobs"].as_mapping().unwrap() {
-        for step in steps(job).iter().filter(|s| {
-            s["uses"]
-                .as_str()
-                .is_some_and(|v| v.starts_with("actions/upload-artifact@"))
-        }) {
-            let options = &step["with"];
-            if options["path"].as_str() == Some("${{ runner.temp }}/windows-preview/") {
+        for step in steps(job) {
+            if let Some(action) = step["uses"].as_str() {
+                for forbidden in [
+                    "actions/upload-artifact@",
+                    "actions/download-artifact@",
+                    "actions/cache",
+                ] {
+                    assert!(
+                        !action.starts_with(forbidden),
+                        "{name:?}: forbidden Actions storage"
+                    );
+                }
+            }
+            let env = &step["env"];
+            let Some(kind) = env["RELEASE_ARTIFACT_KIND"].as_str() else {
+                continue;
+            };
+            assert_eq!(
+                step["run"].as_str(),
+                Some("bash ci/native-release/run.sh retain-artifacts")
+            );
+            assert_eq!(
+                env["STORAGE_CONFIG"].as_str(),
+                Some("${{ secrets.STORAGE_CONFIG }}")
+            );
+            assert_eq!(
+                env["RESOLVED_SOURCE_SHA"].as_str(),
+                Some("${{ needs.resolve.outputs.source_sha }}")
+            );
+            for credential in [
+                "SIGNING_CONFIG",
+                "BUILD_CONFIG",
+                "GH_TOKEN",
+                "GITHUB_TOKEN",
+                "DIAGNOSTICS_PUBLIC_KEY",
+            ] {
+                assert!(env[credential].is_null(), "{name:?}:{credential}");
+            }
+            assert!(step["with"].is_null());
+            if kind == "evaluation" {
                 assert_eq!(name.as_str(), Some("verify"));
-                assert_eq!(options["retention-days"].as_u64(), Some(7));
-                assert_eq!(options["if-no-files-found"].as_str(), Some("error"));
+                assert_eq!(
+                    env["RELEASE_ARTIFACT_SCOPE"].as_str(),
+                    Some("verify-${{ matrix.target }}")
+                );
                 require_text(
                     step,
                     "inputs.preview_windows_self_sign && matrix.target == 'windows'",
                 );
+                require_text(step, "success()");
             } else {
-                assert_eq!(
-                    options["path"].as_str(),
-                    Some("${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed")
-                );
-                assert_eq!(options["retention-days"].as_u64(), Some(1));
+                assert_eq!(kind, "diagnostics");
+                assert_eq!(step["if"].as_str(), Some("${{ always() }}"));
             }
         }
         if !["release_source_approval", "resolve"].contains(&name.as_str().unwrap()) {
             assert_eq!(
                 steps(job)
                     .iter()
-                    .filter(|s| s["with"]["path"].as_str()
-                        == Some("${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed"))
+                    .filter(|s| s["env"]["RELEASE_ARTIFACT_KIND"].as_str() == Some("diagnostics"))
                     .count(),
                 1
             );
@@ -800,6 +855,39 @@ fn only_sealed_diagnostics_and_explicit_preview_packages_are_public_artifacts() 
             .unwrap()
             .contains("preview_windows_self_sign")
     );
+}
+#[test]
+fn windows_application_jobs_consume_the_same_private_source_bound_sdk() {
+    let w = workflow("release");
+    let jobs = &w["jobs"];
+    let sdk = &jobs["windows_sdk"];
+    assert_eq!(sdk["runs-on"].as_str(), Some("ubuntu-24.04"));
+    assert_eq!(
+        task(sdk)["run"].as_str(),
+        Some("bash ci/native-release/run.sh windows-sdk")
+    );
+    assert_eq!(
+        sdk["outputs"]["manifest_sha256"].as_str(),
+        Some("${{ steps.sdk.outputs.manifest_sha256 }}")
+    );
+    for name in ["integration", "verify", "windows_download"] {
+        assert!(needs(&jobs[name]).contains("windows_sdk"));
+        assert_eq!(
+            task(&jobs[name])["env"]["OMNITERM_WINDOWS_SDK_MANIFEST_SHA256"].as_str(),
+            Some("${{ needs.windows_sdk.outputs.manifest_sha256 }}")
+        );
+    }
+    require_text(
+        sdk,
+        "inputs.verify_target == 'all' || inputs.verify_target == 'windows'",
+    );
+    require_text(
+        &jobs["verify"],
+        "needs.windows_sdk.result == 'skipped' && inputs.verify_target != 'all' && inputs.verify_target != 'windows'",
+    );
+    let policy: serde_json::Value =
+        serde_json::from_str(&read("ci/standard-runner-policy.json")).unwrap();
+    assert_eq!(policy["prohibit_actions_storage"], true);
 }
 #[test]
 fn native_agent_matrix_pin_wix_and_complete_hash_check_precede_artifact_retention() {
@@ -823,13 +911,56 @@ fn native_agent_matrix_pin_wix_and_complete_hash_check_precede_artifact_retentio
         .unwrap();
     let upload = s
         .iter()
-        .position(|v| v["with"]["path"].as_str() == Some("${{ runner.temp }}/agent-release/"))
+        .position(|v| v["env"]["RELEASE_ARTIFACT_KIND"].as_str() == Some("agent-packages"))
         .unwrap();
     assert!(handoff < upload);
     assert_eq!(
-        s[upload]["with"]["if-no-files-found"].as_str(),
-        Some("error")
+        s[upload]["run"].as_str(),
+        Some("bash ci/native-release/run.sh retain-artifacts")
     );
+    assert_eq!(
+        s[upload]["env"]["STORAGE_CONFIG"].as_str(),
+        Some("${{ secrets.OMNI_AGENT_STORAGE_CONFIG }}")
+    );
+    assert_eq!(
+        s[upload]["env"]["RESOLVED_SOURCE_SHA"].as_str(),
+        Some("${{ steps.approved.outputs.source_sha }}")
+    );
+    assert_eq!(
+        s[upload]["env"]["RELEASE_ARTIFACT_SCOPE"].as_str(),
+        Some("${{ matrix.artifact_scope }}")
+    );
+    for step in s {
+        if let Some(action) = step["uses"].as_str() {
+            assert!(
+                !action.starts_with("actions/upload-artifact@")
+                    && !action.starts_with("actions/download-artifact@")
+                    && !action.starts_with("actions/cache")
+            );
+        }
+        if step["env"]["RELEASE_ARTIFACT_KIND"].as_str().is_some() {
+            for key in [
+                "SIGNING_CONFIG",
+                "DIAGNOSTICS_PUBLIC_KEY",
+                "GH_TOKEN",
+                "GITHUB_TOKEN",
+                "BUILD_CONFIG",
+            ] {
+                assert!(step["env"][key].is_null());
+            }
+        }
+    }
+    for row in job["strategy"]["matrix"]["include"].as_sequence().unwrap() {
+        let platform = row["platform"].as_str().unwrap();
+        assert_eq!(
+            row["artifact_scope"].as_str(),
+            Some(format!("agent-{}", platform.replace('_', "-")).as_str())
+        );
+        assert!(
+            omni_release_launcher::runner_policy::RUNNERS
+                .contains(&row["runner"].as_str().unwrap())
+        );
+    }
     assert!(
         s.iter()
             .any(|v| v["run"].as_str() == Some("bash ci/native-release/run.sh agent-source"))

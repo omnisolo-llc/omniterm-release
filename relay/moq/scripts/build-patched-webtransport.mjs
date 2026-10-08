@@ -2,12 +2,12 @@ import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {existsSync} from 'node:fs';
 import {
-  copyFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, writeFile,
+  cp, mkdir, mkdtemp, readFile, rm, writeFile,
 } from 'node:fs/promises';
 import {delimiter, dirname, join, resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {fileURLToPath} from 'node:url';
-import {nativeBuildPath, requireLoadedAddon} from './native-build-identity.mjs';
+import {nativeBuildPath, prepareAdapterSource, requireLoadedAddon, treeDigest} from './native-build-identity.mjs';
 
 const adapterCommit = '212ef743f0cf52adb234d60d5b41c48257e967b4';
 const quicheCommit = '80bf9559d3a4c08dde4b85abc46d190a88ffef64';
@@ -49,43 +49,6 @@ function run(command, args, options = {}) {
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
-}
-
-async function treeDigest(root, {excludeBuildOutput = false, ignoreGeneratedMarker = false} = {}) {
-  const hash = createHash('sha256');
-
-  async function visit(directory, relativeDirectory = '') {
-    const entries = await readdir(directory, {withFileTypes: true});
-    entries.sort((left, right) => left.name.localeCompare(right.name));
-    for (const entry of entries) {
-      const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
-      if (entry.name === '.git' || entry.name === 'node_modules') continue;
-      if (relativeDirectory === '' && excludeBuildOutput &&
-          (entry.name === 'build' || entry.name.startsWith('build_') || entry.name === 'third_party')) {
-        continue;
-      }
-      if (relativeDirectory === '' && ignoreGeneratedMarker &&
-          entry.name === '.omniterm-quiche-close-ack') continue;
-
-      const fullPath = join(directory, entry.name);
-      const metadata = await lstat(fullPath);
-      if (metadata.isDirectory()) {
-        hash.update(`directory\0${relativePath}\0`);
-        await visit(fullPath, relativePath);
-      } else if (metadata.isSymbolicLink()) {
-        hash.update(`symlink\0${relativePath}\0${await readlink(fullPath)}\0`);
-      } else if (metadata.isFile()) {
-        hash.update(`file\0${relativePath}\0`);
-        hash.update(await readFile(fullPath));
-        hash.update('\0');
-      } else {
-        throw new Error(`Unsupported source closure entry: ${relativePath}`);
-      }
-    }
-  }
-
-  await visit(root);
-  return hash.digest('hex');
 }
 
 function runtimeBinaryPath(adapterRoot) {
@@ -185,19 +148,17 @@ async function main() {
     const compiledPackage = JSON.parse(await readFile(join(compiledPackageRoot, 'package.json'), 'utf8'));
     if (compiledPackage.version !== adapterVersion) throw new Error('Verified adapter tarball version mismatch');
 
-    const installedSourceDigest = await treeDigest(adapterRoot, {excludeBuildOutput: true});
-    const tarballSourceDigest = await treeDigest(compiledPackageRoot, {excludeBuildOutput: true});
-    if (installedSourceDigest !== tarballSourceDigest) {
-      throw new Error('Installed adapter source differs from its package-lock tarball');
-    }
-
-    run('git', ['init', compiledPackageRoot]);
-    run('git', ['-C', compiledPackageRoot, 'apply', '--unidiff-zero', '--check', sessionPatchFile]);
-    run('git', ['-C', compiledPackageRoot, 'apply', '--unidiff-zero', sessionPatchFile]);
-    run('git', ['-C', compiledPackageRoot, 'apply', '--unidiff-zero', '-p3', '--check', clientPatchFile]);
-    run('git', ['-C', compiledPackageRoot, 'apply', '--unidiff-zero', '-p3', clientPatchFile]);
-    for (const path of adapterPatchSources) {
-      await copyFile(join(compiledPackageRoot, path), join(adapterRoot, path));
+    const preparedAdapter = await prepareAdapterSource({adapterRoot,
+      pristineRoot: compiledPackageRoot, patchSources: adapterPatchSources,
+      applyPatches: () => {
+        run('git', ['init', compiledPackageRoot]);
+        run('git', ['-C', compiledPackageRoot, 'apply', '--unidiff-zero', '--check', sessionPatchFile]);
+        run('git', ['-C', compiledPackageRoot, 'apply', '--unidiff-zero', sessionPatchFile]);
+        run('git', ['-C', compiledPackageRoot, 'apply', '--unidiff-zero', '-p3', '--check', clientPatchFile]);
+        run('git', ['-C', compiledPackageRoot, 'apply', '--unidiff-zero', '-p3', clientPatchFile]);
+      }});
+    if (preparedAdapter.state === 'patched') {
+      process.stdout.write('Resuming exact patched adapter source without recopying\n');
     }
 
     run('git', ['init', sourceRoot]);
@@ -243,9 +204,7 @@ async function main() {
     await rm(join(installedThirdParty, '.omniterm-quiche-close-ack'), {force: true});
 
     const patchedSourceDigest = await treeDigest(adapterRoot, {excludeBuildOutput: true});
-    const expectedPatchedSourceDigest = await treeDigest(compiledPackageRoot,
-      {excludeBuildOutput: true});
-    if (patchedSourceDigest !== expectedPatchedSourceDigest) {
+    if (patchedSourceDigest !== preparedAdapter.expectedPatchedSourceDigest) {
       throw new Error('Installed adapter source does not match the patched tarball source');
     }
 
