@@ -24,19 +24,27 @@ failed() {
   echo 'Public native launcher compilation failed; output is confined to private diagnostics.' >&2
   if [[ -n "${DIAGNOSTICS_PUBLIC_KEY:-}" ]]; then
     touch "$scratch/task.log"
+    sealed_out="${RUNNER_TEMP:?}/encrypted-diagnostics/diagnostics.sealed"
+    if [[ "${OS:-}" == Windows_NT ]]; then
+      sealed_out="$(cygpath -m "$sealed_out")"
+    fi
     env -i PATH="$PATH" DIAGNOSTICS_PUBLIC_KEY="$DIAGNOSTICS_PUBLIC_KEY" \
-      node "$here/../seal_diagnostics.cjs" "$native_scratch" "${RUNNER_TEMP:?}/encrypted-diagnostics/diagnostics.sealed" \
+      node "$here/../seal_diagnostics.cjs" "$native_scratch" "$sealed_out" \
       >/dev/null 2>&1 || true
   fi
   exit 1
 }
-env -i PATH="$PATH" HOME="$native_scratch/home" RUSTUP_HOME="$rustup_home" \
-  SYSTEMROOT="${SYSTEMROOT:-${SystemRoot:-}}" WINDIR="${WINDIR:-}" TEMP="$native_scratch" TMP="$native_scratch" \
+env -i PATH="$PATH" HOME="$native_scratch/home" USERPROFILE="$native_scratch/home" RUSTUP_HOME="$rustup_home" \
+  SYSTEMROOT="${SYSTEMROOT:-${SystemRoot:-}}" WINDIR="${WINDIR:-}" \
+  SYSTEMDRIVE="${SYSTEMDRIVE:-${SystemDrive:-}}" COMSPEC="${COMSPEC:-${ComSpec:-}}" \
+  TEMP="$native_scratch" TMP="$native_scratch" \
   CARGO_HOME="$native_scratch/cargo" CARGO_TARGET_DIR="$native_scratch/target" \
   CARGO_BUILD_JOBS=1 rustup toolchain install 1.95.0 --profile minimal --no-self-update \
   >"$scratch/bootstrap.log" 2>&1 || failed
-env -i PATH="$PATH" HOME="$native_scratch/home" RUSTUP_HOME="$rustup_home" \
-  SYSTEMROOT="${SYSTEMROOT:-${SystemRoot:-}}" WINDIR="${WINDIR:-}" TEMP="$native_scratch" TMP="$native_scratch" \
+env -i PATH="$PATH" HOME="$native_scratch/home" USERPROFILE="$native_scratch/home" RUSTUP_HOME="$rustup_home" \
+  SYSTEMROOT="${SYSTEMROOT:-${SystemRoot:-}}" WINDIR="${WINDIR:-}" \
+  SYSTEMDRIVE="${SYSTEMDRIVE:-${SystemDrive:-}}" COMSPEC="${COMSPEC:-${ComSpec:-}}" \
+  TEMP="$native_scratch" TMP="$native_scratch" \
   CARGO_HOME="$native_scratch/cargo" CARGO_TARGET_DIR="$native_scratch/target" \
   CARGO_BUILD_JOBS=1 cargo +1.95.0 build --locked --release \
   --bin omni-release-launcher --manifest-path "$manifest" \
@@ -45,4 +53,8 @@ env -i PATH="$PATH" HOME="$native_scratch/home" RUSTUP_HOME="$rustup_home" \
 # Compilation stays isolated above; caller-relative CLI inputs must retain the
 # same meaning they had at the workflow boundary.
 cd "$caller"
-"$scratch/target/release/omni-release-launcher" "$@"
+launcher="$scratch/target/release/omni-release-launcher"
+if [[ -f "$launcher.exe" ]]; then
+  launcher="$launcher.exe"
+fi
+"$launcher" "$@"
