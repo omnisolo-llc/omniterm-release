@@ -7,7 +7,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 base="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 scratch="$(mktemp -d "$base/omni-native-launcher.XXXXXXXX")"
 scratch="$(cd "$scratch" && pwd -P)"
-trap 'rm -rf -- "$scratch"' EXIT
+trap 'rm -rf -- "$scratch" 2>/dev/null || true' EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 mkdir "$scratch/home" "$scratch/cargo" "$scratch/target"
