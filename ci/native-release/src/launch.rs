@@ -1220,5 +1220,34 @@ fn build_native_stage(
     {
         crate::retained_artifacts::seal_evaluation(env, request, root, bootstrap)?;
     }
+    let outputs_dir = work.join("outputs");
+    if outputs_dir.is_dir() {
+        let dest = Path::new("release-work/outputs");
+        let _ = fs::create_dir_all(dest);
+        let runner_dest = if let Ok(runner_temp) = required(env, "RUNNER_TEMP")
+            && let Ok(target) = required(env, "RELEASE_TARGET")
+        {
+            let path = Path::new(runner_temp)
+                .join("reviewed-public-candidates")
+                .join(target);
+            let _ = fs::create_dir_all(&path);
+            Some(path)
+        } else {
+            None
+        };
+        if let Ok(entries) = fs::read_dir(&outputs_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file()
+                    && let Some(file_name) = path.file_name()
+                {
+                    let _ = fs::copy(&path, dest.join(file_name));
+                    if let Some(ref r_dest) = runner_dest {
+                        let _ = fs::copy(&path, r_dest.join(file_name));
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
