@@ -82,6 +82,18 @@ and SHA-256 pair. The launcher then recipient-encrypts that ZIP and removes the
 plaintext pair before the separate retention step runs. Preview retention cannot
 satisfy a production signing or publication gate.
 
+For an explicitly selected self-signed Windows release, `BUILD_CONFIG` carries
+`"OMNI_WINDOWS_SELF_SIGNED":"true"`; only string values `"true"` and `"false"`
+are accepted, and an absent flag defaults to false. The native publication plan
+may include a `windows_self_signed` boolean, also defaulting to false. The
+launcher requires those values to agree and binds the selection to its reviewed
+publication identity. Existing plans with an absent or false flag retain their
+normal release notes and identity. A true flag adds disclosure of self-signed
+Authenticode, Windows trust warnings, and detached OpenPGP package verification.
+The Windows ZIP includes only the public DER `omniterm-windows-signing.cer`, not
+private key material. Native certificate identity, timestamp, catalog, package
+signature, same-run identity, and complete byte/hash readback checks remain required.
+
 SOURCE is the canonical verified checkout path. The launcher supplies
 PUBLIC_BUILDER_SHA, RELEASE_INTEGRATION_SOURCE_REPOSITORY,
 RELEASE_INTEGRATION_SOURCE_REF, PRIVATE_BOOTSTRAP_LOG, PRIVATE_DIAGNOSTIC_LOG and

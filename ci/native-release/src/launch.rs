@@ -303,11 +303,19 @@ pub fn write_outputs(env: &Environment, values: &[(&str, &str)]) -> Result<()> {
     }
     crate::guards::unchanged(&file, path)?;
     for (key, value) in values {
-        if !key.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+        if !key
+            .as_bytes()
+            .first()
+            .is_some_and(|b| b.is_ascii_lowercase() || *b == b'_')
+            || !key
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
             || value.contains(['\r', '\n', '\0'])
         {
             return Err("Unsafe workflow output value");
         }
+    }
+    for (key, value) in values {
         writeln!(file, "{key}={value}").map_err(|_| "Workflow output write failed")?;
     }
     Ok(())
