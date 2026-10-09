@@ -60,7 +60,7 @@ jobs:
         run: |
           npm ci --prefix relay/cloudflare
           bash ci/test-native-release.sh
-          node --test ci/test_sealed_diagnostics.cjs
+          node --test ci/test_sealed_diagnostics.cjs ci/test_sealed_evaluation.cjs
           npm test --prefix relay/cloudflare
 
   first-party-moq:

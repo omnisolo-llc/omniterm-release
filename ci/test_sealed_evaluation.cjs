@@ -11,7 +11,7 @@ const pem = keys.publicKey.export({type: 'spki', format: 'pem'});
 const identity = {source_repository: 'omnisolo-llc/omniterm', source_sha: 'a'.repeat(40),
   builder_repository: 'omnisolo-llc/omniterm-release', builder_sha: 'b'.repeat(40), run_id: '42', attempt: '2'};
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'evaluation-contract-'));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'evaluation-contract-')));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
   const input = path.join(root, 'preview'); fs.mkdirSync(input);
   const bytes = Buffer.concat([Buffer.from('PK\x03\x04fixture-evaluation-'), crypto.randomBytes(2 * 1024 * 1024)]);
