@@ -8,7 +8,7 @@ const crypto = require('node:crypto');
 const {MAGIC, sealEvaluation} = require('./seal_evaluation.cjs');
 const keys = crypto.generateKeyPairSync('rsa', {modulusLength: 3072});
 const pem = keys.publicKey.export({type: 'spki', format: 'pem'});
-const identity = {source_repository: 'ql-owo-lp/omniterm', source_sha: 'a'.repeat(40),
+const identity = {source_repository: 'omnisolo-llc/omniterm', source_sha: 'a'.repeat(40),
   builder_repository: 'omnisolo-llc/omniterm-release', builder_sha: 'b'.repeat(40), run_id: '42', attempt: '2'};
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'evaluation-contract-'));

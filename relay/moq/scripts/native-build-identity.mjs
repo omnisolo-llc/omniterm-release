@@ -1,6 +1,10 @@
 import {join,resolve} from 'node:path';
 import {createHash} from 'node:crypto';
-import {copyFile, lstat, readFile, readdir, readlink} from 'node:fs/promises';
+import {copyFile, cp, lstat, readFile, readdir, readlink, rm} from 'node:fs/promises';
+
+export const generatedProtoPaths = Object.freeze(
+  ['cached_network_parameters', 'crypto_server_config', 'source_address_token']
+    .flatMap(name => ['h', 'cc'].map(extension => `quiche/quiche/quic/core/proto/${name}.pb.${extension}`)));
 
 // Upstream prefers build_<platform>_<arch>, not the generic prebuilt directory.
 export function nativeBuildPath(root, platform = process.platform, arch = process.arch) {
@@ -16,7 +20,8 @@ export function requireLoadedAddon(expected, actual) {
   }
 }
 
-export async function treeDigest(root, {excludeBuildOutput = false, ignoreGeneratedMarker = false} = {}) {
+export async function treeDigest(root, {excludeBuildOutput = false, ignoreGeneratedMarker = false,
+  ignoreGeneratedProto = false} = {}) {
   const hash = createHash('sha256');
 
   async function visit(directory, relativeDirectory = '') {
@@ -31,6 +36,7 @@ export async function treeDigest(root, {excludeBuildOutput = false, ignoreGenera
       }
       if (relativeDirectory === '' && ignoreGeneratedMarker &&
           entry.name === '.omniterm-quiche-close-ack') continue;
+      if (ignoreGeneratedProto && generatedProtoPaths.includes(relativePath)) continue;
 
       const fullPath = join(directory, entry.name);
       const metadata = await lstat(fullPath);
@@ -51,6 +57,25 @@ export async function treeDigest(root, {excludeBuildOutput = false, ignoreGenera
 
   await visit(root);
   return hash.digest('hex');
+}
+
+export async function prepareThirdPartySource({pristineRoot, installedRoot}) {
+  const options = {ignoreGeneratedMarker: true, ignoreGeneratedProto: true};
+  const expected = await treeDigest(pristineRoot, options);
+  let installed;
+  try { installed = await treeDigest(installedRoot, options); }
+  catch { installed = null; }
+  const state = installed === expected ? 'reused' : 'replaced';
+  if (state === 'replaced') {
+    await rm(installedRoot, {recursive: true, force: true});
+    await cp(pristineRoot, installedRoot, {recursive: true});
+  }
+  await rm(join(installedRoot, '.omniterm-quiche-close-ack'), {force: true});
+  for (const path of generatedProtoPaths) await rm(join(installedRoot, path), {force: true});
+  if (await treeDigest(installedRoot, options) !== expected) {
+    throw Error('Installed Quiche source differs from its pinned checkout');
+  }
+  return state;
 }
 
 // The caller supplies the integrity-verified pristine tarball and applies only

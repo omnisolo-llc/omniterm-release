@@ -18,7 +18,7 @@ fn environment(runner: &Path) -> Environment {
         ("GITHUB_SHA".into(), "b".repeat(40)),
         ("GITHUB_RUN_ID".into(), "42".into()),
         ("GITHUB_RUN_ATTEMPT".into(), "2".into()),
-        ("SOURCE_REPOSITORY".into(), "ql-owo-lp/omniterm".into()),
+        ("SOURCE_REPOSITORY".into(), "omnisolo-llc/omniterm".into()),
         ("SOURCE_BRANCH".into(), "main".into()),
         ("RESOLVED_SOURCE_SHA".into(), "a".repeat(40)),
         ("RUNNER_TEMP".into(), runner.to_string_lossy().into_owned()),
