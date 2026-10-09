@@ -1220,34 +1220,193 @@ fn build_native_stage(
     {
         crate::retained_artifacts::seal_evaluation(env, request, root, bootstrap)?;
     }
+    let workspace =
+        std::env::current_dir().map_err(|_| "Workspace output directory unavailable")?;
+    export_workspace_outputs(&work, &workspace)
+}
+
+fn export_workspace_outputs(work: &Path, workspace: &Path) -> Result<()> {
     let outputs_dir = work.join("outputs");
-    if outputs_dir.is_dir() {
-        let dest = Path::new("release-work/outputs");
-        let _ = fs::create_dir_all(dest);
-        let runner_dest = if let Ok(runner_temp) = required(env, "RUNNER_TEMP")
-            && let Ok(target) = required(env, "RELEASE_TARGET")
+    match fs::symlink_metadata(&outputs_dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("Native workspace outputs unavailable"),
+        Ok(_) => crate::guards::directory(&outputs_dir)?,
+    }
+    let dest = workspace.join("release-work/outputs");
+    fs::create_dir_all(&dest).map_err(|_| "Native workspace output directory unavailable")?;
+    crate::guards::directory(&dest)?;
+    // Public candidate custody belongs to the native catalog exporter. This
+    // workspace mirror includes private updater handoffs and is never its input.
+    for entry in fs::read_dir(&outputs_dir).map_err(|_| "Native workspace outputs unreadable")? {
+        let entry = entry.map_err(|_| "Native workspace output entry unreadable")?;
+        if entry
+            .file_type()
+            .map_err(|_| "Native workspace output entry unavailable")?
+            .is_file()
         {
-            let path = Path::new(runner_temp)
-                .join("reviewed-public-candidates")
-                .join(target);
-            let _ = fs::create_dir_all(&path);
-            Some(path)
-        } else {
-            None
-        };
-        if let Ok(entries) = fs::read_dir(&outputs_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file()
-                    && let Some(file_name) = path.file_name()
-                {
-                    let _ = fs::copy(&path, dest.join(file_name));
-                    if let Some(ref r_dest) = runner_dest {
-                        let _ = fs::copy(&path, r_dest.join(file_name));
-                    }
-                }
-            }
+            fs::copy(entry.path(), dest.join(entry.file_name()))
+                .map_err(|_| "Native workspace output copy failed")?;
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod workspace_output_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    struct Fixture {
+        _temporary: tempfile::TempDir,
+        work: PathBuf,
+        workspace: PathBuf,
+        runner: PathBuf,
+        target: String,
+    }
+    impl Fixture {
+        fn new(target: &str, mode: &str) -> Self {
+            let temporary =
+                tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+            let work = temporary.path().join("private-task");
+            let workspace = temporary.path().join("workspace");
+            let runner = temporary.path().join("runner");
+            for path in [work.join("outputs"), workspace.clone(), runner.clone()] {
+                fs::create_dir_all(path).unwrap();
+            }
+            let suffixes: &[&str] = match target {
+                "linux" => &[
+                    "linux-x64.tar.gz",
+                    "services-linux-x64.tar.gz",
+                    "agent-linux-amd64.deb",
+                    "agent-linux-x86_64.rpm",
+                ],
+                "windows" => &["windows-x64.zip", "services-windows-x64.zip"],
+                "macos" => &["macos-arm64.zip", "services-macos-arm64.tar.gz"],
+                _ => panic!("unknown fixture target"),
+            };
+            let handoff = runner.join("reviewed-public-candidates").join(target);
+            if mode == "option1" {
+                fs::create_dir_all(&handoff).unwrap();
+            }
+            for suffix in suffixes {
+                let name = format!("omniterm-1.2.3-{suffix}");
+                let bytes = format!("public package fixture {name}").into_bytes();
+                fs::write(work.join("outputs").join(&name), &bytes).unwrap();
+                if mode == "option1" {
+                    fs::write(handoff.join(&name), &bytes).unwrap();
+                    fs::write(
+                        handoff.join(format!("{name}.sha256")),
+                        b"native sidecar fixture",
+                    )
+                    .unwrap();
+                }
+            }
+            if mode != "build-only" {
+                let architecture = if target == "macos" { "arm64" } else { "x64" };
+                fs::write(
+                    work.join("outputs").join(format!(
+                        "omniterm-1.2.3-updates-{target}-{architecture}.zip"
+                    )),
+                    b"private updater fixture",
+                )
+                .unwrap();
+            }
+            if mode == "option1" {
+                // Opaque native handoff bytes: these file-boundary fixtures do
+                // not establish producer or package-signing authority.
+                fs::write(
+                    handoff.join("candidate-manifest.json"),
+                    b"native manifest fixture",
+                )
+                .unwrap();
+            }
+            Self {
+                _temporary: temporary,
+                work,
+                workspace,
+                runner,
+                target: target.into(),
+            }
+        }
+        fn handoff(&self) -> PathBuf {
+            self.runner
+                .join("reviewed-public-candidates")
+                .join(&self.target)
+        }
+        fn export(&self) -> Result<()> {
+            export_workspace_outputs(&self.work, &self.workspace)
+        }
+        fn assert_workspace_mirror(&self) {
+            assert_eq!(
+                inventory(&self.workspace.join("release-work/outputs")),
+                inventory(&self.work.join("outputs"))
+            );
+            assert!(!self.work.join("release-work/outputs").exists());
+        }
+    }
+    fn inventory(path: &Path) -> BTreeMap<String, Vec<u8>> {
+        fs::read_dir(path)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (
+                    entry.file_name().into_string().unwrap(),
+                    fs::read(entry.path()).unwrap(),
+                )
+            })
+            .collect()
+    }
+    fn desktop_handoff(target: &str) {
+        let fixture = Fixture::new(target, "option1");
+        let before = inventory(&fixture.handoff());
+        assert!(before.contains_key("candidate-manifest.json"));
+        assert!(before.keys().any(|name| name.ends_with(".sha256")));
+        assert!(!before.keys().any(|name| name.contains("-updates-")));
+        fixture.export().unwrap();
+        fixture.assert_workspace_mirror();
+        assert_eq!(inventory(&fixture.handoff()), before);
+    }
+    #[test]
+    fn full_option1_linux_workspace_export_keeps_exact_public_handoff() {
+        desktop_handoff("linux");
+    }
+    #[test]
+    fn full_option1_windows_workspace_export_keeps_exact_public_handoff() {
+        desktop_handoff("windows");
+    }
+    #[test]
+    fn full_option1_macos_workspace_export_keeps_exact_public_handoff() {
+        desktop_handoff("macos");
+    }
+    #[test]
+    fn build_only_and_legacy_workspace_exports_do_not_create_public_handoffs() {
+        for mode in ["build-only", "legacy-acceptance"] {
+            for target in ["linux", "windows", "macos"] {
+                let fixture = Fixture::new(target, mode);
+                assert!(!fixture.handoff().exists());
+                fixture.export().unwrap();
+                fixture.assert_workspace_mirror();
+                assert!(!fixture.handoff().exists());
+            }
+        }
+    }
+    #[test]
+    fn workspace_export_reports_a_blocked_destination() {
+        let fixture = Fixture::new("linux", "build-only");
+        fs::create_dir(fixture.workspace.join("release-work")).unwrap();
+        fs::write(
+            fixture.workspace.join("release-work/outputs"),
+            b"occupied destination",
+        )
+        .unwrap();
+        assert!(fixture.export().is_err());
+    }
+    #[test]
+    fn stages_without_native_outputs_do_not_create_a_workspace_mirror() {
+        let fixture = Fixture::new("linux", "build-only");
+        fs::remove_dir_all(fixture.work.join("outputs")).unwrap();
+        fixture.export().unwrap();
+        assert!(!fixture.workspace.join("release-work").exists());
+        assert!(!fixture.handoff().exists());
+    }
 }
