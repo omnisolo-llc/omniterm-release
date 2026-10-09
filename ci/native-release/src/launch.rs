@@ -216,6 +216,9 @@ pub fn validate_configuration(env: &Environment, command: &str) -> Result<Reques
     if (command == "resolve" && target != "resolve")
         || (command == "verify-ios" && target != "ios")
         || (command == "windows-sdk" && target != "windows")
+        || (command == "verify-build" && !crate::input::BUILD_TARGETS.contains(&target))
+        || (command == "prepare-publication" && target != "publish")
+        || (command == "sign-public-candidates" && target != "publish")
         || (command == "run" && target == "resolve")
     {
         return Err("Native workflow target mismatch");
@@ -441,6 +444,17 @@ fn strip_verbatim(path: PathBuf) -> PathBuf {
 
 pub fn run(command: &str) -> Result<()> {
     let mut env: Environment = std::env::vars().collect();
+    if command == "publish-candidates" {
+        if std::env::args().len() != 2 {
+            return Err("Unexpected native publication arguments");
+        }
+        let plan = crate::publication_candidates::verify_prepared(&env)?;
+        let directory = crate::publication_candidates::directory(&env)?;
+        let mut github = crate::publication_candidates::GitHub::new(&env, &directory)?;
+        crate::publication_candidates::publish(&plan, &mut github)?;
+        println!("Verified public release publication completed.");
+        return Ok(());
+    }
     if command == "validate-request" {
         if std::env::args().len() != 2 {
             return Err("Unexpected native release arguments");
@@ -529,6 +543,9 @@ pub fn run(command: &str) -> Result<()> {
         "resolve",
         "verify-ios",
         "run",
+        "verify-build",
+        "prepare-publication",
+        "sign-public-candidates",
         "agent-run",
         "windows-sdk",
         "retain-artifacts",
@@ -919,6 +936,16 @@ fn build_native_stage(
         return Err("Native release executable missing");
     }
     let mut task = match &stage {
+        NativeStage::Release(_, command)
+            if [
+                "verify-build",
+                "prepare-publication",
+                "sign-public-candidates",
+            ]
+            .contains(command) =>
+        {
+            crate::publication_candidates::verification_environment(env)
+        }
         NativeStage::Release(_, _) => task_environment(env),
         NativeStage::Ci(request) => crate::ci_request::ci_child_environment(env, request)?,
         NativeStage::WindowsSdk(_, _) | NativeStage::RetainedArtifacts(_, _) => {
@@ -955,17 +982,61 @@ fn build_native_stage(
                 "RELEASE_INTEGRATION_SOURCE_REF".into(),
                 format!("refs/heads/{}", required(env, "SOURCE_BRANCH")?),
             );
-            let args = vec![
-                if *command == "agent-run" {
-                    "agent-run".into()
-                } else {
-                    "run".into()
-                },
-                "--root".into(),
-                src.to_string_lossy().into_owned(),
-                "--work-dir".into(),
-                work.to_string_lossy().into_owned(),
-            ];
+            let args = if *command == "sign-public-candidates" {
+                crate::publication_candidates::request(env)?;
+                task.insert(
+                    "OMNI_RELEASE_SOURCE_ROOT".into(),
+                    src.to_string_lossy().into_owned(),
+                );
+                vec![
+                    "helper".into(),
+                    "artifacts".into(),
+                    "sign-public-candidates".into(),
+                    "--input".into(),
+                    required(env, "INPUT_PUBLIC_CANDIDATES_DIR")?.into(),
+                    "--work".into(),
+                    work.to_string_lossy().into_owned(),
+                ]
+            } else if *command == "prepare-publication" {
+                crate::publication_candidates::request(env)?;
+                task.remove("SIGNING_CONFIG");
+                let publication = crate::publication_candidates::directory(env)?;
+                if fs::symlink_metadata(&publication).is_ok() {
+                    return Err("Public publication preparation must be fresh");
+                }
+                directory(&publication)?;
+                task.insert(
+                    "OMNI_RELEASE_SOURCE_ROOT".into(),
+                    src.to_string_lossy().into_owned(),
+                );
+                vec![
+                    "helper".into(),
+                    "artifacts".into(),
+                    "prepare-publication-candidates".into(),
+                    "--input".into(),
+                    required(env, "INPUT_PUBLIC_CANDIDATES_DIR")?.into(),
+                    "--output".into(),
+                    publication.join("files").to_string_lossy().into_owned(),
+                    "--plan".into(),
+                    publication.join("plan.json").to_string_lossy().into_owned(),
+                    "--work".into(),
+                    work.to_string_lossy().into_owned(),
+                ]
+            } else {
+                vec![
+                    if *command == "agent-run" {
+                        "agent-run".into()
+                    } else if *command == "verify-build" {
+                        "verify-build".into()
+                    } else {
+                        "run".into()
+                    },
+                    "--root".into(),
+                    src.to_string_lossy().into_owned(),
+                    "--work-dir".into(),
+                    work.to_string_lossy().into_owned(),
+                ]
+            };
             let timeout = match required(env, "RELEASE_TARGET")? {
                 "integration" => 21600,
                 "installation" => 10800,
@@ -1133,6 +1204,16 @@ fn build_native_stage(
     frozen.verify()?;
     source::verify_tools(src, &checkout)?;
     source::verify(src, source_sha, &checkout, false, 0)?;
+    if let NativeStage::Release(_, "prepare-publication") = &stage {
+        let (verifier, plan) = crate::publication_candidates::retain_verifier(env, &binary)?;
+        write_outputs(
+            env,
+            &[
+                ("native_verifier_sha256", &verifier),
+                ("publication_plan_sha256", &plan),
+            ],
+        )?;
+    }
     if let NativeStage::Release(request, _) = &stage
         && request.preview_windows_self_sign
         && required(env, "RELEASE_TARGET")? == "windows"

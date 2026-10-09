@@ -6,6 +6,7 @@ pub mod json;
 pub mod launch;
 pub mod prerequisites;
 pub mod process;
+pub mod publication_candidates;
 pub mod retained_artifacts;
 pub mod runner_policy;
 pub mod source;

@@ -3,6 +3,11 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
+      release_route:
+        description: 'Option1 publishes verified candidates; legacy acceptance retains the complete protected acceptance branch'
+        type: choice
+        options: [option1, legacy-acceptance]
+        default: option1
       build_only:
         description: 'Verify builds: no release publication or production signing; optional self-signed Windows preview'
         type: boolean
@@ -289,6 +294,7 @@ jobs:
     environment: downloads
     permissions:
       contents: read
+      id-token: write
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -314,8 +320,26 @@ jobs:
         run: |
           bash ci/test-native-release.sh
           node --test ci/test_sealed_diagnostics.cjs ci/test_sealed_evaluation.cjs
+      - name: Prepare pinned Windows verification signing client
+        if: ${{ !inputs.build_only && matrix.target == 'windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $root = Join-Path $env:RUNNER_TEMP 'artifact-signing'
+          New-Item -ItemType Directory -Path $root | Out-Null
+          $archive = Join-Path $root 'client.zip'
+          Invoke-WebRequest -Uri 'https://api.nuget.org/v3-flatcontainer/microsoft.artifactsigning.client/1.0.128/microsoft.artifactsigning.client.1.0.128.nupkg' -OutFile $archive
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -cne '74bd7d27e6ce1051409c38d9b46bc8df0400ecd643d51ffbf2ac00869061e40b') { throw 'Artifact Signing client hash mismatch' }
+          $package = Join-Path $root 'package'
+          Expand-Archive -LiteralPath $archive -DestinationPath $package
+          $dlib = Join-Path $package 'bin/x64/Azure.CodeSigning.Dlib.dll'
+          if (-not (Test-Path -LiteralPath $dlib -PathType Leaf)) { throw 'Artifact Signing client is incomplete' }
+          if (-not ((dotnet --list-runtimes) -match '^Microsoft\.NETCore\.App 8\.')) { throw '.NET 8 runtime is required for Artifact Signing' }
       - name: Verify build without publishing
-        run: bash ci/native-release/run.sh run
+        id: public_candidates
+        run: bash ci/native-release/run.sh verify-build
         env:
           RELEASE_TARGET: ${{ matrix.target }}
           OMNITERM_WINDOWS_SDK_MANIFEST_SHA256: ${{ needs.windows_sdk.outputs.manifest_sha256 }}
@@ -333,7 +357,10 @@ jobs:
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
           SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
-          STORAGE_CONFIG: ${{ matrix.target == 'windows' && secrets.STORAGE_CONFIG || '' }}
+          BUILD_CONFIG: ${{ !inputs.build_only && secrets.BUILD_CONFIG || '{}' }}
+          SIGNING_CONFIG: ${{ !inputs.build_only && (matrix.target == 'windows' && secrets.WINDOWS_SIGNING_CONFIG || matrix.target == 'macos' && secrets.MACOS_SIGNING_CONFIG || matrix.target == 'android' && secrets.ANDROID_SIGNING_CONFIG || matrix.target == 'ios' && secrets.IOS_SIGNING_CONFIG || '') || '' }}
+          OMNI_WINDOWS_ARTIFACT_SIGNING_DLIB: ${{ !inputs.build_only && matrix.target == 'windows' && format('{0}/artifact-signing/package/bin/x64/Azure.CodeSigning.Dlib.dll', runner.temp) || '' }}
+          STORAGE_CONFIG: ${{ (!inputs.build_only || matrix.target == 'windows') && secrets.STORAGE_CONFIG || '' }}
           WINDOWS_PREVIEW_OUTPUT_DIR: ${{ inputs.preview_windows_self_sign && matrix.target == 'windows' && format('{0}/windows-preview', runner.temp) || '' }}
       - name: Retain recipient-encrypted Windows evaluation privately
         if: ${{ success() && inputs.preview_windows_self_sign && matrix.target == 'windows' }}
@@ -354,12 +381,13 @@ jobs:
           RELEASE_ARTIFACT_KIND: evaluation
           RELEASE_ARTIFACT_SCOPE: verify-${{ matrix.target }}
       - name: Retain candidate artifacts
-        if: ${{ !cancelled() }}
+        id: public_candidates_upload
+        if: ${{ success() && matrix.target != 'ios' && !inputs.build_only && inputs.release_route == 'option1' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: candidate-artifacts-${{ matrix.target }}
-          path: release-work/outputs/*
-          if-no-files-found: ignore
+          name: public-candidates-${{ matrix.target }}
+          path: ${{ runner.temp }}/reviewed-public-candidates/${{ matrix.target }}
+          if-no-files-found: error
           retention-days: 7
           compression-level: 0
       - name: Retain encrypted diagnostics privately
@@ -386,7 +414,7 @@ jobs:
     permissions:
       contents: write
     needs: [resolve, integration]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: downloads
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -455,7 +483,7 @@ jobs:
     permissions:
       contents: write
     needs: [resolve, validate]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: downloads
     strategy:
       fail-fast: false
@@ -528,7 +556,7 @@ jobs:
   windows_download:
     name: Build and sign Windows candidate (${{ needs.resolve.outputs.workflow_id }})
     needs: [resolve, validate, windows_sdk]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: downloads
     runs-on: windows-2025
     timeout-minutes: 180
@@ -612,7 +640,7 @@ jobs:
     permissions:
       contents: write
     needs: [resolve, validate]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action != 'skip'
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action != 'skip' && inputs.release_route == 'legacy-acceptance'
     environment: app-store
     runs-on: macos-26
     timeout-minutes: 180
@@ -669,7 +697,7 @@ jobs:
     permissions:
       contents: read
     needs: [resolve, validate, downloads, windows_download]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: package-signing
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -726,7 +754,7 @@ jobs:
     permissions:
       contents: write
     needs: [resolve, validate, ios]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action != 'skip'
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action != 'skip' && inputs.release_route == 'legacy-acceptance'
     environment: app-store
     runs-on: macos-26
     timeout-minutes: 180
@@ -781,7 +809,7 @@ jobs:
   installation:
     name: Install and launch actual ${{ matrix.platform }} candidate
     needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: ${{ matrix.attestation_environment }}
     permissions:
       contents: read
@@ -883,7 +911,7 @@ jobs:
   vpn_container:
     name: Managed VPN container E2E (${{ matrix.kernel_state }})
     needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: vpn-container
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
@@ -969,7 +997,7 @@ jobs:
     permissions:
       contents: write
     needs: [resolve, validate, ios, apple_testflight, installation, vpn_container]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action != 'skip'
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action != 'skip' && inputs.release_route == 'legacy-acceptance'
     environment: app-store
     runs-on: macos-26
     timeout-minutes: 180
@@ -1024,7 +1052,7 @@ jobs:
   publication_prepare:
     name: Freeze verified candidates in private storage
     needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation, vpn_container, ios_delivery]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: public-release
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -1080,7 +1108,7 @@ jobs:
   managed_rtc_provider:
     name: Live managed RTC provider acceptance (${{ needs.resolve.outputs.workflow_id }})
     needs: [resolve, publication_prepare]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: managed-rtc-provider
     runs-on: ubuntu-24.04
     timeout-minutes: 360
@@ -1135,7 +1163,7 @@ jobs:
   external_tests:
     name: Actual ${{ matrix.platform }} artifact and provider acceptance
     needs: [resolve, publication_prepare, managed_rtc_provider]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: external-tests
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
@@ -1279,7 +1307,7 @@ jobs:
   external_windows_signing:
     name: Actual Windows Azure signing acceptance
     needs: [resolve, publication_prepare, external_tests]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: external-windows-signing
     runs-on: windows-2025
     timeout-minutes: 180
@@ -1362,7 +1390,7 @@ jobs:
   apple_submission:
     name: Submit accepted iOS candidate for public review
     needs: [resolve, validate, ios_delivery, publication_prepare, vpn_container, external_tests, external_windows_signing]
-    if: ${{ !cancelled() && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action == 'submit' && needs.ios_delivery.result == 'success' && needs.vpn_container.result == 'success' && needs.external_tests.result == 'success' && needs.external_windows_signing.result == 'success' }}
+    if: ${{ !cancelled() && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action == 'submit' && needs.ios_delivery.result == 'success' && needs.vpn_container.result == 'success' && needs.external_tests.result == 'success' && needs.external_windows_signing.result == 'success' && inputs.release_route == 'legacy-acceptance' }}
     environment: app-store
     runs-on: macos-26
     timeout-minutes: 180
@@ -1417,9 +1445,74 @@ jobs:
           RELEASE_ARTIFACT_KIND: diagnostics
           RELEASE_ARTIFACT_SCOPE: apple-submission
 
+  option1_signatures:
+    name: Sign exact verified public candidate bytes
+    needs: [resolve, verify]
+    if: ${{ !cancelled() && !inputs.build_only && inputs.release_route == 'option1' && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && needs.resolve.result == 'success' }}
+    environment: package-signing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+          package-manager-cache: false
+      - name: Download exact public candidates for protected signing
+        id: protected_candidates_download
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          path: release-public-candidates
+          pattern: public-candidates-*
+          merge-multiple: false
+      - name: Sign the exact exported public candidate bytes
+        id: public_candidate_signatures
+        run: bash ci/native-release/run.sh sign-public-candidates
+        env:
+          RELEASE_TARGET: publish
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          INPUT_PUBLIC_CANDIDATES_DIR: ${{ github.workspace }}/release-public-candidates
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          SIGNING_CONFIG: ${{ secrets.PACKAGE_SIGNING_CONFIG }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
+
+      - name: Retain encrypted signing diagnostics privately
+        if: ${{ always() }}
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: publish
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: option1-signatures
+
   publish:
     name: Publish release (${{ needs.resolve.outputs.workflow_id }})
-    if: ${{ !cancelled() && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && needs.resolve.result == 'success' }}
+    if: ${{ !cancelled() && !inputs.build_only && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && needs.resolve.result == 'success' && inputs.release_route == 'option1' }}
     needs: [resolve, verify]
     environment: public-release
     runs-on: ubuntu-24.04
@@ -1431,46 +1524,44 @@ jobs:
         with:
           persist-credentials: false
       - name: Download all candidate artifacts
+        id: public_candidates_download
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
-          path: release-artifacts
-          pattern: candidate-artifacts-*
-          merge-multiple: true
-      - name: Publish GitHub Release
+          path: release-public-candidates
+          pattern: public-candidates-*
+          merge-multiple: false
+      - name: Prepare and verify the public publication plan
+        id: publication_candidates
+        run: bash ci/native-release/run.sh prepare-publication
         env:
-          GH_TOKEN: ${{ secrets.PRIVATE_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.resolve.outputs.version }}
-          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
-        run: |
-          mkdir -p release-dist
-          find release-artifacts -type f -exec cp {} release-dist/ \; 2>/dev/null || true
-          cd release-dist
-          if [ -n "$(ls -A . 2>/dev/null)" ]; then
-            (ls -A | grep -v '^SHA256SUMS$' | xargs sha256sum > SHA256SUMS) 2>/dev/null || true
-            echo "Publishing release v${VERSION} with artifacts:"
-            ls -la
-            gh release create "v${VERSION}" \
-              --repo omnisolo-llc/omniterm \
-              --title "Omniterm v${VERSION}" \
-              --notes "Release v${VERSION} (${SOURCE_SHA})" \
-              --latest \
-              * || gh release upload "v${VERSION}" --repo omnisolo-llc/omniterm * --clobber
-            gh release create "v${VERSION}" \
-              --repo omnisolo-llc/omniterm-release \
-              --title "Omniterm v${VERSION}" \
-              --notes "Release v${VERSION} (${SOURCE_SHA})" \
-              --latest \
-              * || gh release upload "v${VERSION}" --repo omnisolo-llc/omniterm-release * --clobber
-          else
-            echo "No artifact files found; creating release tag"
-            gh release create "v${VERSION}" \
-              --repo omnisolo-llc/omniterm \
-              --title "Omniterm v${VERSION}" \
-              --notes "Release v${VERSION} (${SOURCE_SHA})" \
-              --latest || true
-            gh release create "v${VERSION}" \
-              --repo omnisolo-llc/omniterm-release \
-              --title "Omniterm v${VERSION}" \
-              --notes "Release v${VERSION} (${SOURCE_SHA})" \
-              --latest || true
-          fi
+          RELEASE_TARGET: publish
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          INPUT_PUBLIC_CANDIDATES_DIR: ${{ github.workspace }}/release-public-candidates
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
+      - name: Publish the verified public candidate bytes
+        run: bash ci/native-release/run.sh publish-candidates
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPROVED_NATIVE_VERIFIER_SHA256: ${{ steps.publication_candidates.outputs.native_verifier_sha256 }}
+          APPROVED_PUBLICATION_PLAN_SHA256: ${{ steps.publication_candidates.outputs.publication_plan_sha256 }}
+          RELEASE_TARGET: publish
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
