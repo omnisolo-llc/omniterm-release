@@ -1230,7 +1230,7 @@ jobs:
           find release-artifacts -type f -exec cp {} release-dist/ \; 2>/dev/null || true
           cd release-dist
           if [ -n "$(ls -A . 2>/dev/null)" ]; then
-            sha256sum * > SHA256SUMS 2>/dev/null || true
+            (ls -A | grep -v '^SHA256SUMS$' | xargs sha256sum > SHA256SUMS) 2>/dev/null || true
             echo "Publishing release v${VERSION} with artifacts:"
             ls -la
             gh release create "v${VERSION}" \
