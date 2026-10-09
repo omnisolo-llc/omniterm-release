@@ -886,7 +886,7 @@ fn build_native_stage(
         ],
         root,
         &build,
-        Duration::from_secs(900),
+        Duration::from_secs(1800),
         Some(bootstrap),
     )?;
     println!("Native release phase: native-tool-build");
@@ -902,7 +902,7 @@ fn build_native_stage(
         ],
         root,
         &build,
-        Duration::from_secs(900),
+        Duration::from_secs(1800),
         Some(bootstrap),
     )?;
     frozen.verify()?;

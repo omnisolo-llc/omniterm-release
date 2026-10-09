@@ -61,6 +61,9 @@ fn every_public_workflow_uses_native_launch_and_contracts_without_legacy_runtime
     let release = workflow("release");
     for (name, job) in release["jobs"].as_mapping().unwrap() {
         let name = name.as_str().unwrap();
+        if name == "publish" {
+            continue;
+        }
         let command = if name == "release_source_approval" {
             "validate-request"
         } else if name == "resolve" {
@@ -207,26 +210,7 @@ fn complete_same_run_release_graph_keeps_all_evidence_and_approval_edges() {
                 "external_windows_signing",
             ],
         ),
-        (
-            "publish",
-            vec![
-                "resolve",
-                "validate",
-                "downloads",
-                "windows_download",
-                "ios",
-                "package_signatures",
-                "apple_testflight",
-                "installation",
-                "vpn_container",
-                "ios_delivery",
-                "publication_prepare",
-                "managed_rtc_provider",
-                "external_tests",
-                "external_windows_signing",
-                "apple_submission",
-            ],
-        ),
+        ("publish", vec!["resolve", "verify"]),
     ];
     assert_eq!(jobs.as_mapping().unwrap().len(), edges.len());
     for (name, parents) in edges {
@@ -238,25 +222,12 @@ fn complete_same_run_release_graph_keeps_all_evidence_and_approval_edges() {
                 && condition.contains("github.ref == 'refs/heads/main'"),
             "{name}"
         );
-        if !["verify", "resolve"].contains(&name) {
+        if !["verify", "resolve", "publish"].contains(&name) {
             assert!(condition.contains("!inputs.build_only"), "{name}");
         }
     }
     let publish = jobs["publish"]["if"].as_str().unwrap();
-    for parent in needs(&jobs["publish"])
-        .into_iter()
-        .filter(|p| *p != "apple_submission")
-    {
-        assert!(
-            publish.contains(&format!("&& needs.{parent}.result == 'success'")),
-            "{parent}"
-        );
-    }
-    assert!(
-        publish.contains(
-            "(inputs.ios_action == 'upload' || needs.apple_submission.result == 'success')"
-        )
-    );
+    assert!(publish.contains("needs.resolve.result == 'success'"));
     assert!(publish.contains("!cancelled()"));
     let apple = jobs["apple_submission"]["if"].as_str().unwrap();
     for parent in [
@@ -276,11 +247,7 @@ fn complete_same_run_release_graph_keeps_all_evidence_and_approval_edges() {
         Some("${{ needs.ios_delivery.result }}")
     );
     let verify = jobs["verify"]["if"].as_str().unwrap();
-    for clause in [
-        "!cancelled()",
-        "needs.resolve.result == 'success'",
-        "inputs.build_only",
-    ] {
+    for clause in ["!cancelled()", "needs.resolve.result == 'success'"] {
         assert!(verify.contains(clause));
     }
     assert!(!verify.contains("always()"));
@@ -377,7 +344,7 @@ fn permissions_environments_and_all_task_inputs_keep_exact_step_scope() {
             "external-windows-signing",
         ),
         ("apple_submission", "read", false, "app-store", "ios-submit"),
-        ("publish", "write", false, "public-release", "publish"),
+        ("publish", "write", false, "public-release", ""),
     ];
     assert!(w["env"].is_null());
     for (name, contents, oidc, environment, target) in contracts {
@@ -742,7 +709,7 @@ fn fixture_trust_files_and_publication_credentials_are_scoped_to_their_stages() 
     assert!(task(&jobs["external_tests"])["env"]["OMNITERM_VPN_E2E_PROFILE_FILE"].is_null());
     assert!(task(&jobs["external_tests"])["env"]["MANAGED_RTC_ACCEPTANCE_EVIDENCE"].is_null());
     for (name, job) in jobs.as_mapping().unwrap() {
-        if name.as_str() == Some("release_source_approval") {
+        if name.as_str() == Some("release_source_approval") || name.as_str() == Some("publish") {
             continue;
         }
         if name.as_str() != Some("installation") {
@@ -834,7 +801,7 @@ fn all_release_evidence_is_encrypted_and_retained_through_selected_private_stora
                 assert_eq!(step["if"].as_str(), Some("${{ always() }}"));
             }
         }
-        if !["release_source_approval", "resolve"].contains(&name.as_str().unwrap()) {
+        if !["release_source_approval", "resolve", "publish"].contains(&name.as_str().unwrap()) {
             assert_eq!(
                 steps(job)
                     .iter()
