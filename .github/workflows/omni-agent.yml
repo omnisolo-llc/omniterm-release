@@ -20,21 +20,27 @@ jobs:
         include:
           - runner: ubuntu-24.04
             platform: linux-x86_64
+            artifact_scope: agent-linux-x86-64
             target: linux
           - runner: ubuntu-24.04-arm
             platform: linux-aarch64
+            artifact_scope: agent-linux-aarch64
             target: linux
           - runner: macos-15-intel
             platform: darwin-x86_64
+            artifact_scope: agent-darwin-x86-64
             target: macos
-          - runner: macos-15
+          - runner: macos-26
             platform: darwin-aarch64
+            artifact_scope: agent-darwin-aarch64
             target: macos
           - runner: windows-2025
             platform: windows-x86_64
+            artifact_scope: agent-windows-x86-64
             target: windows
           - runner: windows-11-arm
             platform: windows-aarch64
+            artifact_scope: agent-windows-aarch64
             target: windows
     runs-on: ${{ matrix.runner }}
     steps:
@@ -43,7 +49,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version: '24.21.0'
       - name: Provision pinned native Windows installer tooling
         if: startsWith(matrix.platform, 'windows-')
         run: |
@@ -73,20 +79,36 @@ jobs:
         run: |
           bash ci/native-release/run.sh verify-agent-handoff --directory "$RUNNER_TEMP/agent-release" \
             --version '${{ steps.approved.outputs.version }}' --platform '${{ matrix.platform }}'
-      - name: Retain the complete native distribution and integrity manifest
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: agent-${{ matrix.platform }}
-          path: ${{ runner.temp }}/agent-release/
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 0
-      - name: Retain encrypted diagnostics
+      - name: Retain the complete native candidate privately
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_REQUEST: '{"build_only":true,"source_sha":"${{ steps.approved.outputs.source_sha }}","version":"${{ steps.approved.outputs.version }}","build_number":"1","ios_action":"skip","automatic_release":false,"include_selfhost":true}'
+          RESOLVED_SOURCE_SHA: ${{ steps.approved.outputs.source_sha }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ steps.approved.outputs.source_branch }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.OMNI_AGENT_STORAGE_CONFIG }}
+          OMNI_AGENT_PLATFORM: ${{ matrix.platform }}
+          RELEASE_ARTIFACT_KIND: agent-packages
+          RELEASE_ARTIFACT_SCOPE: ${{ matrix.artifact_scope }}
+      - name: Retain encrypted agent diagnostics privately
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: agent-diagnostics-${{ matrix.platform }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
-          if-no-files-found: ignore
-          retention-days: 1
-          compression-level: 0
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_REQUEST: '{"build_only":true,"source_sha":"${{ steps.approved.outputs.source_sha }}","version":"${{ steps.approved.outputs.version }}","build_number":"1","ios_action":"skip","automatic_release":false,"include_selfhost":true}'
+          RESOLVED_SOURCE_SHA: ${{ steps.approved.outputs.source_sha }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ steps.approved.outputs.source_branch }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.OMNI_AGENT_STORAGE_CONFIG }}
+          OMNI_AGENT_PLATFORM: ${{ matrix.platform }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: ${{ matrix.artifact_scope }}

@@ -305,7 +305,25 @@ fn numeric_versions_source_defaults_resolution_preview_and_boolean_contracts_are
         Request::parse(r#"{"build_only":true,"build_number":"1","include_selfhost":false}"#)
             .unwrap();
     let normalized: Value = serde_json::from_str(&input.normalized().unwrap()).unwrap();
-    assert_eq!(normalized.as_object().unwrap().len(), 7);
+    assert_eq!(
+        normalized
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([
+            "release_route",
+            "build_only",
+            "source_sha",
+            "version",
+            "build_number",
+            "ios_action",
+            "automatic_release",
+            "include_selfhost",
+        ])
+    );
+    assert_eq!(normalized["release_route"], "option1");
     assert_eq!(normalized["include_selfhost"], false);
     for number in ["1", "42", "9999"] {
         Request::parse(&json!({"build_only":true,"build_number":number}).to_string()).unwrap();

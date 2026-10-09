@@ -36,6 +36,194 @@ fn require_text(value: &Value, text: &str) {
     );
 }
 #[test]
+fn option1_publication_keeps_the_test_matrix_decoupled_and_requires_native_public_candidates() {
+    let workflow = workflow("release");
+    let verify = &workflow["jobs"]["verify"];
+    let publish = &workflow["jobs"]["publish"];
+    let signing = &workflow["jobs"]["option1_signatures"];
+    assert_eq!(needs(publish), BTreeSet::from(["resolve", "verify"]));
+    assert_eq!(verify["continue-on-error"].as_bool(), Some(true));
+    require_text(publish, "!inputs.build_only");
+    let producer = steps(verify)
+        .iter()
+        .find(|step| step["id"].as_str() == Some("public_candidates"))
+        .unwrap();
+    assert_eq!(
+        producer["run"].as_str(),
+        Some("bash ci/native-release/run.sh verify-build")
+    );
+    for key in ["GH_TOKEN", "GITHUB_TOKEN", "PRIVATE_RELEASE_TOKEN"] {
+        assert!(producer["env"][key].is_null());
+    }
+    let upload = steps(verify)
+        .iter()
+        .find(|step| step["id"].as_str() == Some("public_candidates_upload"))
+        .unwrap();
+    assert_eq!(
+        upload["with"]["path"].as_str(),
+        Some("${{ runner.temp }}/reviewed-public-candidates/${{ matrix.target }}")
+    );
+    assert_eq!(upload["with"]["if-no-files-found"].as_str(), Some("error"));
+    let download = steps(publish)
+        .iter()
+        .find(|step| step["id"].as_str() == Some("public_candidates_download"))
+        .unwrap();
+    assert_eq!(download["with"]["merge-multiple"].as_bool(), Some(false));
+    let preflight = steps(publish)
+        .iter()
+        .position(|step| step["id"].as_str() == Some("publication_candidates"))
+        .unwrap();
+    let signer = steps(signing)
+        .iter()
+        .position(|step| step["id"].as_str() == Some("public_candidate_signatures"))
+        .unwrap();
+    assert_eq!(needs(signing), BTreeSet::from(["resolve", "verify"]));
+    assert_eq!(signing["environment"].as_str(), Some("package-signing"));
+    assert_eq!(signing["permissions"]["contents"].as_str(), Some("read"));
+    assert_eq!(signing["permissions"].as_mapping().unwrap().len(), 1);
+    assert!(signing["continue-on-error"].is_null());
+    let signing_node = steps(signing)
+        .iter()
+        .find(|step| {
+            step["uses"]
+                .as_str()
+                .is_some_and(|action| action.starts_with("actions/setup-node@"))
+        })
+        .unwrap();
+    assert_eq!(
+        signing_node["with"]["package-manager-cache"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        steps(signing)[signer - 1]["id"].as_str(),
+        Some("protected_candidates_download")
+    );
+    assert_eq!(
+        steps(signing)[signer - 1]["with"]["pattern"].as_str(),
+        Some("public-candidates-*")
+    );
+    assert_eq!(
+        steps(signing)[signer - 1]["with"]["path"].as_str(),
+        Some("release-public-candidates")
+    );
+    assert_eq!(
+        steps(signing)[signer - 1]["with"]["merge-multiple"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        steps(signing)[signer]["run"].as_str(),
+        Some("bash ci/native-release/run.sh sign-public-candidates")
+    );
+    assert_eq!(
+        steps(signing)[signer]["env"]["SIGNING_CONFIG"].as_str(),
+        Some("${{ secrets.PACKAGE_SIGNING_CONFIG }}")
+    );
+    for step in steps(signing) {
+        for key in ["GH_TOKEN", "GITHUB_TOKEN", "PRIVATE_RELEASE_TOKEN"] {
+            assert!(step["env"][key].is_null());
+        }
+    }
+    assert!(steps(publish)[preflight]["env"]["SIGNING_CONFIG"].is_null());
+    assert_eq!(
+        steps(publish)[preflight]["run"].as_str(),
+        Some("bash ci/native-release/run.sh prepare-publication")
+    );
+    assert_eq!(
+        steps(publish)[preflight]["env"]["INPUT_PUBLIC_CANDIDATES_DIR"].as_str(),
+        Some("${{ github.workspace }}/release-public-candidates")
+    );
+    for step in &steps(publish)[..=preflight] {
+        for key in ["GH_TOKEN", "GITHUB_TOKEN", "PRIVATE_RELEASE_TOKEN"] {
+            assert!(step["env"][key].is_null());
+        }
+    }
+    let writer = steps(publish).last().unwrap();
+    assert_eq!(
+        writer["run"].as_str(),
+        Some("bash ci/native-release/run.sh publish-candidates")
+    );
+    assert_eq!(
+        writer["env"]["GH_TOKEN"].as_str(),
+        Some("${{ secrets.GITHUB_TOKEN }}")
+    );
+    assert_eq!(
+        writer["env"]["APPROVED_NATIVE_VERIFIER_SHA256"].as_str(),
+        Some("${{ steps.publication_candidates.outputs.native_verifier_sha256 }}")
+    );
+    assert_eq!(
+        writer["env"]["APPROVED_PUBLICATION_PLAN_SHA256"].as_str(),
+        Some("${{ steps.publication_candidates.outputs.publication_plan_sha256 }}")
+    );
+    for key in [
+        "PRIVATE_RELEASE_TOKEN",
+        "SOURCE_DEPLOY_KEY",
+        "SOURCE_SUBMODULE_TOKEN",
+        "SOURCE_SUBMODULE_DEPLOY_KEY_BASE64",
+        "STORAGE_CONFIG",
+        "SIGNING_CONFIG",
+    ] {
+        assert!(writer["env"][key].is_null());
+    }
+    let text = serde_yaml::to_string(publish).unwrap();
+    for forbidden in [
+        "--clobber",
+        "release-dist",
+        "release create",
+        "release upload",
+        "needs.integration",
+        "needs.installation",
+        "needs.managed_rtc_provider",
+    ] {
+        assert!(!text.contains(forbidden));
+    }
+}
+#[test]
+fn route_selection_assigns_one_version_draft_owner_and_retains_legacy_acceptance() {
+    let w = workflow("release");
+    let input = &w["on"]["workflow_dispatch"]["inputs"]["release_route"];
+    assert_eq!(input["default"].as_str(), Some("option1"));
+    assert_eq!(
+        input["options"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["option1", "legacy-acceptance"]
+    );
+    for (name, job) in w["jobs"].as_mapping().unwrap() {
+        let name = name.as_str().unwrap();
+        let condition = job["if"].as_str().unwrap();
+        if ["publish", "option1_signatures"].contains(&name) {
+            assert!(condition.contains("inputs.release_route == 'option1'"));
+            assert_eq!(needs(job), BTreeSet::from(["resolve", "verify"]));
+        } else if ![
+            "release_source_approval",
+            "resolve",
+            "windows_sdk",
+            "integration",
+            "verify",
+        ]
+        .contains(&name)
+        {
+            assert!(
+                condition.contains("inputs.release_route == 'legacy-acceptance'"),
+                "{name}"
+            );
+            assert!(condition.contains("!inputs.build_only"));
+        }
+    }
+    require_text(
+        &w["jobs"]["resolve"],
+        "needs.release_source_approval.result == 'success'",
+    );
+    let upload = steps(&w["jobs"]["verify"])
+        .iter()
+        .find(|step| step["id"].as_str() == Some("public_candidates_upload"))
+        .unwrap();
+    require_text(upload, "inputs.release_route == 'option1'");
+}
+#[test]
 fn every_public_workflow_uses_native_launch_and_contracts_without_legacy_runtime() {
     for name in ["release", "omni-agent", "contracts"] {
         let parsed = workflow(name);
@@ -68,6 +256,12 @@ fn every_public_workflow_uses_native_launch_and_contracts_without_legacy_runtime
             "validate-request"
         } else if name == "resolve" {
             "resolve"
+        } else if name == "windows_sdk" {
+            "windows-sdk"
+        } else if name == "verify" {
+            "verify-build"
+        } else if name == "option1_signatures" {
+            "sign-public-candidates"
         } else {
             "run"
         };
@@ -118,11 +312,15 @@ fn complete_same_run_release_graph_keeps_all_evidence_and_approval_edges() {
     let edges = [
         ("release_source_approval", vec![]),
         ("resolve", vec!["release_source_approval"]),
-        ("integration", vec!["resolve"]),
-        ("verify", vec!["resolve"]),
+        ("windows_sdk", vec!["resolve"]),
+        ("integration", vec!["resolve", "windows_sdk"]),
+        ("verify", vec!["resolve", "windows_sdk"]),
         ("validate", vec!["resolve", "integration"]),
         ("downloads", vec!["resolve", "validate"]),
-        ("windows_download", vec!["resolve", "validate"]),
+        (
+            "windows_download",
+            vec!["resolve", "validate", "windows_sdk"],
+        ),
         ("ios", vec!["resolve", "validate"]),
         (
             "package_signatures",
@@ -205,6 +403,7 @@ fn complete_same_run_release_graph_keeps_all_evidence_and_approval_edges() {
             ],
         ),
         ("publish", vec!["resolve", "verify"]),
+        ("option1_signatures", vec!["resolve", "verify"]),
     ];
     assert_eq!(jobs.as_mapping().unwrap().len(), edges.len());
     for (name, parents) in edges {
@@ -267,8 +466,9 @@ fn permissions_environments_and_all_task_inputs_keep_exact_step_scope() {
             "",
         ),
         ("resolve", "read", false, "downloads", "resolve"),
+        ("windows_sdk", "read", false, "downloads", "windows"),
         ("integration", "read", false, "downloads", "integration"),
-        ("verify", "read", false, "downloads", "${{ matrix.target }}"),
+        ("verify", "read", true, "downloads", "${{ matrix.target }}"),
         ("validate", "write", false, "downloads", "validate"),
         (
             "downloads",
@@ -338,6 +538,13 @@ fn permissions_environments_and_all_task_inputs_keep_exact_step_scope() {
         ),
         ("apple_submission", "read", false, "app-store", "ios-submit"),
         ("publish", "write", false, "public-release", ""),
+        (
+            "option1_signatures",
+            "read",
+            false,
+            "package-signing",
+            "publish",
+        ),
     ];
     assert!(w["env"].is_null());
     for (name, contents, oidc, environment, target) in contracts {
@@ -399,18 +606,26 @@ fn permissions_environments_and_all_task_inputs_keep_exact_step_scope() {
                     Some(format!("${{{{ secrets.{key} }}}}").as_str())
                 );
             }
-            assert_eq!(
-                env["OMNITERM_VPN_PROVIDER_PUBLIC_KEY"].as_str(),
-                Some("${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}")
-            );
-            for key in [
-                "OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64",
-                "OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64",
-            ] {
+            if name != "windows_sdk" {
                 assert_eq!(
-                    env[key].as_str(),
-                    Some(format!("${{{{ vars.{key} }}}}").as_str())
+                    env["OMNITERM_VPN_PROVIDER_PUBLIC_KEY"].as_str(),
+                    Some("${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}")
                 );
+                for key in [
+                    "OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64",
+                    "OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64",
+                ] {
+                    if name == "option1_signatures" {
+                        assert!(env[key].is_null());
+                    } else {
+                        assert_eq!(
+                            env[key].as_str(),
+                            Some(format!("${{{{ vars.{key} }}}}").as_str())
+                        );
+                    }
+                }
+            } else {
+                assert!(env["OMNITERM_VPN_PROVIDER_PUBLIC_KEY"].is_null());
             }
         } else {
             assert!(
@@ -419,8 +634,25 @@ fn permissions_environments_and_all_task_inputs_keep_exact_step_scope() {
                     && env["OMNITERM_VPN_PROVIDER_PUBLIC_KEY"].is_null()
             );
         }
-        if ["resolve", "verify"].contains(&name) {
+        if name == "resolve" {
             assert!(env["STORAGE_CONFIG"].is_null() && env["BUILD_CONFIG"].is_null());
+        } else if name == "verify" {
+            assert_eq!(
+                env["STORAGE_CONFIG"].as_str(),
+                Some(
+                    "${{ (!inputs.build_only || matrix.target == 'windows') && secrets.STORAGE_CONFIG || '' }}"
+                )
+            );
+            assert_eq!(
+                env["BUILD_CONFIG"].as_str(),
+                Some("${{ !inputs.build_only && secrets.BUILD_CONFIG || '{}' }}")
+            );
+        } else if name == "windows_sdk" {
+            assert_eq!(
+                env["STORAGE_CONFIG"].as_str(),
+                Some("${{ secrets.STORAGE_CONFIG }}")
+            );
+            assert!(env["BUILD_CONFIG"].is_null());
         } else {
             assert_eq!(
                 env["STORAGE_CONFIG"].as_str(),
@@ -432,20 +664,33 @@ fn permissions_environments_and_all_task_inputs_keep_exact_step_scope() {
             );
         }
         let signing = match name {
+            "verify" => Some(
+                "${{ !inputs.build_only && (matrix.target == 'windows' && secrets.WINDOWS_SIGNING_CONFIG || matrix.target == 'macos' && secrets.MACOS_SIGNING_CONFIG || matrix.target == 'android' && secrets.ANDROID_SIGNING_CONFIG || matrix.target == 'ios' && secrets.IOS_SIGNING_CONFIG || '') || '' }}",
+            ),
             "windows_download" | "external_windows_signing" => {
                 Some("${{ secrets.WINDOWS_SIGNING_CONFIG }}")
             }
             "ios" | "apple_testflight" | "ios_delivery" | "apple_submission" => {
                 Some("${{ secrets.IOS_SIGNING_CONFIG }}")
             }
-            "package_signatures" => Some("${{ secrets.PACKAGE_SIGNING_CONFIG }}"),
+            "package_signatures" | "option1_signatures" => {
+                Some("${{ secrets.PACKAGE_SIGNING_CONFIG }}")
+            }
             "downloads" => Some(
                 "${{ matrix.target == 'macos' && secrets.MACOS_SIGNING_CONFIG || matrix.target == 'android' && secrets.ANDROID_SIGNING_CONFIG || '' }}",
             ),
             _ => None,
         };
         assert_eq!(env["SIGNING_CONFIG"].as_str(), signing, "{name}");
-        if ["verify", "resolve", "integration", "managed_rtc_provider"].contains(&name) {
+        if [
+            "verify",
+            "resolve",
+            "integration",
+            "managed_rtc_provider",
+            "option1_signatures",
+        ]
+        .contains(&name)
+        {
             assert!(env["GH_TOKEN"].is_null());
         }
         if name == "verify" {
@@ -720,45 +965,93 @@ fn fixture_trust_files_and_publication_credentials_are_scoped_to_their_stages() 
     require_text(&jobs["external_tests"], "RELEASE_METADATA_READ_TOKEN");
 }
 #[test]
-fn only_sealed_diagnostics_and_explicit_preview_packages_are_public_artifacts() {
+fn all_release_evidence_is_encrypted_and_retained_through_selected_private_storage() {
     let w = workflow("release");
+    let mut candidate_exchanges = BTreeSet::new();
     for (name, job) in w["jobs"].as_mapping().unwrap() {
-        for step in steps(job).iter().filter(|s| {
-            s["uses"]
-                .as_str()
-                .is_some_and(|v| v.starts_with("actions/upload-artifact@"))
-        }) {
-            let options = &step["with"];
-            if options["path"].as_str() == Some("${{ runner.temp }}/windows-preview/") {
+        let definition = serde_json::to_value(job).unwrap();
+        for step in steps(job) {
+            if let Some(action) = step["uses"].as_str() {
+                if action.starts_with("actions/upload-artifact@")
+                    || action.starts_with("actions/download-artifact@")
+                {
+                    let kind =
+                        omni_release_launcher::runner_policy::reviewed_public_candidate_exchange(
+                            "release.yml",
+                            name.as_str().unwrap(),
+                            &definition,
+                            &serde_json::to_value(step).unwrap(),
+                        )
+                        .expect(
+                            "only the closed public candidate exchange may use Actions storage",
+                        );
+                    candidate_exchanges.insert((name.as_str().unwrap(), kind));
+                }
+                assert!(
+                    !action.starts_with("actions/cache"),
+                    "{name:?}: forbidden Actions storage"
+                );
+            }
+            let env = &step["env"];
+            let Some(kind) = env["RELEASE_ARTIFACT_KIND"].as_str() else {
+                continue;
+            };
+            assert_eq!(
+                step["run"].as_str(),
+                Some("bash ci/native-release/run.sh retain-artifacts")
+            );
+            assert_eq!(
+                env["STORAGE_CONFIG"].as_str(),
+                Some("${{ secrets.STORAGE_CONFIG }}")
+            );
+            assert_eq!(
+                env["RESOLVED_SOURCE_SHA"].as_str(),
+                Some("${{ needs.resolve.outputs.source_sha }}")
+            );
+            for credential in [
+                "SIGNING_CONFIG",
+                "BUILD_CONFIG",
+                "GH_TOKEN",
+                "GITHUB_TOKEN",
+                "DIAGNOSTICS_PUBLIC_KEY",
+            ] {
+                assert!(env[credential].is_null(), "{name:?}:{credential}");
+            }
+            assert!(step["with"].is_null());
+            if kind == "evaluation" {
                 assert_eq!(name.as_str(), Some("verify"));
-                assert_eq!(options["retention-days"].as_u64(), Some(7));
-                assert_eq!(options["if-no-files-found"].as_str(), Some("error"));
+                assert_eq!(
+                    env["RELEASE_ARTIFACT_SCOPE"].as_str(),
+                    Some("verify-${{ matrix.target }}")
+                );
                 require_text(
                     step,
                     "inputs.preview_windows_self_sign && matrix.target == 'windows'",
                 );
-            } else if options["path"].as_str() == Some("release-work/outputs/*") {
-                assert_eq!(name.as_str(), Some("verify"));
-                assert_eq!(options["retention-days"].as_u64(), Some(7));
+                require_text(step, "success()");
             } else {
-                assert_eq!(
-                    options["path"].as_str(),
-                    Some("${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed")
-                );
-                assert_eq!(options["retention-days"].as_u64(), Some(1));
+                assert_eq!(kind, "diagnostics");
+                assert_eq!(step["if"].as_str(), Some("${{ always() }}"));
             }
         }
         if !["release_source_approval", "resolve", "publish"].contains(&name.as_str().unwrap()) {
             assert_eq!(
                 steps(job)
                     .iter()
-                    .filter(|s| s["with"]["path"].as_str()
-                        == Some("${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed"))
+                    .filter(|s| s["env"]["RELEASE_ARTIFACT_KIND"].as_str() == Some("diagnostics"))
                     .count(),
                 1
             );
         }
     }
+    assert_eq!(
+        candidate_exchanges,
+        BTreeSet::from([
+            ("verify", "upload"),
+            ("publish", "download"),
+            ("option1_signatures", "download")
+        ])
+    );
     assert!(
         task(&w["jobs"]["verify"])["env"]["WINDOWS_PREVIEW_OUTPUT_DIR"]
             .as_str()
@@ -770,6 +1063,40 @@ fn only_sealed_diagnostics_and_explicit_preview_packages_are_public_artifacts() 
             .unwrap()
             .contains("preview_windows_self_sign")
     );
+}
+
+#[test]
+fn windows_application_jobs_consume_the_same_private_source_bound_sdk() {
+    let w = workflow("release");
+    let jobs = &w["jobs"];
+    let sdk = &jobs["windows_sdk"];
+    assert_eq!(sdk["runs-on"].as_str(), Some("ubuntu-24.04"));
+    assert_eq!(
+        task(sdk)["run"].as_str(),
+        Some("bash ci/native-release/run.sh windows-sdk")
+    );
+    assert_eq!(
+        sdk["outputs"]["manifest_sha256"].as_str(),
+        Some("${{ steps.sdk.outputs.manifest_sha256 }}")
+    );
+    for name in ["integration", "verify", "windows_download"] {
+        assert!(needs(&jobs[name]).contains("windows_sdk"));
+        assert_eq!(
+            task(&jobs[name])["env"]["OMNITERM_WINDOWS_SDK_MANIFEST_SHA256"].as_str(),
+            Some("${{ needs.windows_sdk.outputs.manifest_sha256 }}")
+        );
+    }
+    require_text(
+        sdk,
+        "inputs.verify_target == 'all' || inputs.verify_target == 'windows'",
+    );
+    require_text(
+        &jobs["verify"],
+        "needs.windows_sdk.result == 'skipped' && inputs.verify_target != 'all' && inputs.verify_target != 'windows'",
+    );
+    let policy: serde_json::Value =
+        serde_json::from_str(&read("ci/standard-runner-policy.json")).unwrap();
+    assert_eq!(policy["prohibit_actions_storage"], true);
 }
 #[test]
 fn native_agent_matrix_pin_wix_and_complete_hash_check_precede_artifact_retention() {
@@ -793,13 +1120,56 @@ fn native_agent_matrix_pin_wix_and_complete_hash_check_precede_artifact_retentio
         .unwrap();
     let upload = s
         .iter()
-        .position(|v| v["with"]["path"].as_str() == Some("${{ runner.temp }}/agent-release/"))
+        .position(|v| v["env"]["RELEASE_ARTIFACT_KIND"].as_str() == Some("agent-packages"))
         .unwrap();
     assert!(handoff < upload);
     assert_eq!(
-        s[upload]["with"]["if-no-files-found"].as_str(),
-        Some("error")
+        s[upload]["run"].as_str(),
+        Some("bash ci/native-release/run.sh retain-artifacts")
     );
+    assert_eq!(
+        s[upload]["env"]["STORAGE_CONFIG"].as_str(),
+        Some("${{ secrets.OMNI_AGENT_STORAGE_CONFIG }}")
+    );
+    assert_eq!(
+        s[upload]["env"]["RESOLVED_SOURCE_SHA"].as_str(),
+        Some("${{ steps.approved.outputs.source_sha }}")
+    );
+    assert_eq!(
+        s[upload]["env"]["RELEASE_ARTIFACT_SCOPE"].as_str(),
+        Some("${{ matrix.artifact_scope }}")
+    );
+    for step in s {
+        if let Some(action) = step["uses"].as_str() {
+            assert!(
+                !action.starts_with("actions/upload-artifact@")
+                    && !action.starts_with("actions/download-artifact@")
+                    && !action.starts_with("actions/cache")
+            );
+        }
+        if step["env"]["RELEASE_ARTIFACT_KIND"].as_str().is_some() {
+            for key in [
+                "SIGNING_CONFIG",
+                "DIAGNOSTICS_PUBLIC_KEY",
+                "GH_TOKEN",
+                "GITHUB_TOKEN",
+                "BUILD_CONFIG",
+            ] {
+                assert!(step["env"][key].is_null());
+            }
+        }
+    }
+    for row in job["strategy"]["matrix"]["include"].as_sequence().unwrap() {
+        let platform = row["platform"].as_str().unwrap();
+        assert_eq!(
+            row["artifact_scope"].as_str(),
+            Some(format!("agent-{}", platform.replace('_', "-")).as_str())
+        );
+        assert!(
+            omni_release_launcher::runner_policy::RUNNERS
+                .contains(&row["runner"].as_str().unwrap())
+        );
+    }
     assert!(
         s.iter()
             .any(|v| v["run"].as_str() == Some("bash ci/native-release/run.sh agent-source"))

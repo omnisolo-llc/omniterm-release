@@ -24,6 +24,345 @@ const MAX_DOCUMENTS: usize = 128;
 const MAX_CELLS: usize = 256;
 type Cell = BTreeMap<String, Value>;
 
+const VERIFY_CANDIDATE_IF: &str = "${{ !cancelled() && needs.resolve.result == 'success' && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' }}";
+const VERIFY_SDK_CANDIDATE_IF: &str = "${{ !cancelled() && needs.resolve.result == 'success' && (needs.windows_sdk.result == 'success' || (needs.windows_sdk.result == 'skipped' && inputs.verify_target != 'all' && inputs.verify_target != 'windows')) && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' }}";
+const PUBLISH_CANDIDATE_IF: &str = "${{ !cancelled() && !inputs.build_only && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && needs.resolve.result == 'success' && inputs.release_route == 'option1' }}";
+const SIGN_CANDIDATE_IF: &str = "${{ !cancelled() && !inputs.build_only && inputs.release_route == 'option1' && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && needs.resolve.result == 'success' }}";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CandidateRole {
+    Produce,
+    Prepare,
+    Sign,
+}
+
+fn closed_fields(value: &Value, required: &[&str], optional: &[&str]) -> bool {
+    value.as_object().is_some_and(|map| {
+        required.iter().all(|key| map.contains_key(*key))
+            && map
+                .keys()
+                .all(|key| required.contains(&key.as_str()) || optional.contains(&key.as_str()))
+            && map.get("name").is_none_or(|name| {
+                name.as_str()
+                    .is_some_and(|name| !name.is_empty() && name.len() <= 256)
+            })
+    })
+}
+
+fn exact_needs(value: &Value, expected: &[&str]) -> bool {
+    if let Some(single) = value.as_str() {
+        return expected.len() == 1 && expected[0] == single;
+    }
+    value.as_array().is_some_and(|values| {
+        values.len() == expected.len()
+            && values
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<BTreeSet<_>>()
+                == expected.iter().copied().collect()
+    })
+}
+
+fn candidate_identity(env: &Value, target: &str, role: CandidateRole) -> bool {
+    let Some(map) = env.as_object() else {
+        return false;
+    };
+    for (key, value) in [
+        ("RELEASE_TARGET", target),
+        ("RELEASE_REQUEST", "${{ toJSON(inputs) }}"),
+        (
+            "RESOLVED_SOURCE_SHA",
+            "${{ needs.resolve.outputs.source_sha }}",
+        ),
+        ("RESOLVED_VERSION", "${{ needs.resolve.outputs.version }}"),
+        (
+            "RESOLVED_BUILD_NUMBER",
+            "${{ needs.resolve.outputs.build_number }}",
+        ),
+    ] {
+        if map.get(key).and_then(Value::as_str) != Some(value) {
+            return false;
+        }
+    }
+    let source_keys = [
+        "SOURCE_REPOSITORY",
+        "SOURCE_BRANCH",
+        "SOURCE_DEPLOY_KEY",
+        "SOURCE_KNOWN_HOSTS",
+        "SOURCE_SUBMODULE_TOKEN",
+        "SOURCE_SUBMODULE_DEPLOY_KEY_BASE64",
+        "DIAGNOSTICS_PUBLIC_KEY",
+    ];
+    for (key, value) in map {
+        if source_keys.contains(&key.as_str()) {
+            if value.as_str() != Some(format!("${{{{ secrets.{key} }}}}").as_str()) {
+                return false;
+            }
+            continue;
+        }
+        let accepted = match key.as_str() {
+            "RELEASE_TARGET"
+            | "RELEASE_REQUEST"
+            | "RESOLVED_SOURCE_SHA"
+            | "RESOLVED_VERSION"
+            | "RESOLVED_BUILD_NUMBER" => true,
+            "BUILD_CONFIG" => {
+                value.as_str() == Some("${{ secrets.BUILD_CONFIG }}")
+                    || (role == CandidateRole::Produce
+                        && value.as_str()
+                            == Some("${{ !inputs.build_only && secrets.BUILD_CONFIG || '{}' }}"))
+            }
+            "SIGNING_CONFIG" => {
+                (role == CandidateRole::Produce
+                    && value.as_str()
+                        == Some(
+                            "${{ !inputs.build_only && (matrix.target == 'windows' && secrets.WINDOWS_SIGNING_CONFIG || matrix.target == 'macos' && secrets.MACOS_SIGNING_CONFIG || matrix.target == 'android' && secrets.ANDROID_SIGNING_CONFIG || matrix.target == 'ios' && secrets.IOS_SIGNING_CONFIG || '') || '' }}",
+                        ))
+                    || (role == CandidateRole::Sign
+                        && value.as_str() == Some("${{ secrets.PACKAGE_SIGNING_CONFIG }}"))
+            }
+            "STORAGE_CONFIG" => {
+                value.as_str() == Some("${{ secrets.STORAGE_CONFIG }}")
+                    || (role == CandidateRole::Produce
+                        && value.as_str()
+                            == Some(
+                                "${{ matrix.target == 'windows' && secrets.STORAGE_CONFIG || '' }}",
+                            ))
+                    || (role == CandidateRole::Produce
+                        && value.as_str()
+                            == Some(
+                                "${{ (!inputs.build_only || matrix.target == 'windows') && secrets.STORAGE_CONFIG || '' }}",
+                            ))
+            }
+            "INPUT_PUBLIC_CANDIDATES_DIR" => {
+                role != CandidateRole::Produce
+                    && value.as_str() == Some("${{ github.workspace }}/release-public-candidates")
+            }
+            "OMNITERM_WINDOWS_SDK_MANIFEST_SHA256" => {
+                role == CandidateRole::Produce
+                    && value.as_str() == Some("${{ needs.windows_sdk.outputs.manifest_sha256 }}")
+            }
+            "OMNITERM_VPN_PROVIDER_PUBLIC_KEY" => {
+                value.as_str() == Some("${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}")
+            }
+            "OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64" => {
+                role == CandidateRole::Produce
+                    && value.as_str() == Some("${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}")
+            }
+            "OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64" => {
+                role == CandidateRole::Produce
+                    && value.as_str() == Some("${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}")
+            }
+            "WINDOWS_PREVIEW_OUTPUT_DIR" => {
+                role == CandidateRole::Produce
+                    && value.as_str()
+                        == Some(
+                            "${{ inputs.preview_windows_self_sign && matrix.target == 'windows' && format('{0}/windows-preview', runner.temp) || '' }}",
+                        )
+            }
+            "OMNI_WINDOWS_ARTIFACT_SIGNING_DLIB" => {
+                role == CandidateRole::Produce
+                    && value.as_str()
+                        == Some(
+                            "${{ !inputs.build_only && matrix.target == 'windows' && format('{0}/artifact-signing/package/bin/x64/Azure.CodeSigning.Dlib.dll', runner.temp) || '' }}",
+                        )
+            }
+            _ => false,
+        };
+        if !accepted {
+            return false;
+        }
+    }
+    (role != CandidateRole::Sign
+        || map.get("BUILD_CONFIG").and_then(Value::as_str) == Some("${{ secrets.BUILD_CONFIG }}")
+            && map.get("STORAGE_CONFIG").and_then(Value::as_str)
+                == Some("${{ secrets.STORAGE_CONFIG }}")
+            && map.get("SIGNING_CONFIG").and_then(Value::as_str)
+                == Some("${{ secrets.PACKAGE_SIGNING_CONFIG }}"))
+        && (role == CandidateRole::Produce
+            || map
+                .get("INPUT_PUBLIC_CANDIDATES_DIR")
+                .and_then(Value::as_str)
+                == Some("${{ github.workspace }}/release-public-candidates"))
+}
+
+fn native_candidate_step(step: &Value, id: &str, command: &str, role: CandidateRole) -> bool {
+    closed_fields(step, &["id", "run", "env"], &["name", "if"])
+        && step["id"].as_str() == Some(id)
+        && step["run"].as_str() == Some(command)
+        && step
+            .get("if")
+            .is_none_or(|condition| condition.as_str() == Some("${{ success() }}"))
+        // Source acquisition and preparation declarations are required on
+        // these native roles. Submodule credential alternatives stay optional;
+        // private evaluation uses its separate retention predicate below.
+        && [
+            "SOURCE_REPOSITORY",
+            "SOURCE_BRANCH",
+            "SOURCE_DEPLOY_KEY",
+            "SOURCE_KNOWN_HOSTS",
+            "DIAGNOSTICS_PUBLIC_KEY",
+            "BUILD_CONFIG",
+            "STORAGE_CONFIG",
+        ]
+        .iter()
+        .all(|key| step["env"].get(*key).is_some())
+        && candidate_identity(
+            &step["env"],
+            if role != CandidateRole::Produce {
+                "publish"
+            } else {
+                "${{ matrix.target }}"
+            },
+            role,
+        )
+}
+
+fn private_evaluation_step(step: &Value) -> bool {
+    if !closed_fields(step, &["run", "if", "env"], &["name"])
+        || step["run"] != "bash ci/native-release/run.sh retain-artifacts"
+        || step["if"]
+            != "${{ success() && inputs.preview_windows_self_sign && matrix.target == 'windows' }}"
+        || step["env"]["RELEASE_ARTIFACT_KIND"] != "evaluation"
+        || step["env"]["RELEASE_ARTIFACT_SCOPE"] != "verify-${{ matrix.target }}"
+    {
+        return false;
+    }
+    let mut env = step["env"].clone();
+    let Some(map) = env.as_object_mut() else {
+        return false;
+    };
+    map.remove("RELEASE_ARTIFACT_KIND");
+    map.remove("RELEASE_ARTIFACT_SCOPE");
+    candidate_identity(&env, "${{ matrix.target }}", CandidateRole::Produce)
+}
+
+/// Closed declaration check for the three public candidate exchange roles. The
+/// auditor separately enforces direct workflow traversal and absence of global
+/// environment. This function performs no source acquisition or artifact I/O.
+pub fn reviewed_public_candidate_exchange(
+    workflow: &str,
+    job: &str,
+    definition: &Value,
+    step: &Value,
+) -> Option<&'static str> {
+    if workflow != "release.yml"
+        || !definition["env"].is_null()
+        || !definition["defaults"].is_null()
+        || !definition["container"].is_null()
+        || !definition["services"].is_null()
+    {
+        return None;
+    }
+    let steps = definition["steps"].as_array()?;
+    let index = steps.iter().position(|candidate| candidate == step)?;
+    if steps.iter().filter(|candidate| *candidate == step).count() != 1 {
+        return None;
+    }
+    let condition = definition["if"].as_str()?;
+    match job {
+        "verify" => {
+            let sdk_role = condition == VERIFY_SDK_CANDIDATE_IF
+                && exact_needs(&definition["needs"], &["resolve", "windows_sdk"]);
+            if !(condition == VERIFY_CANDIDATE_IF
+                && exact_needs(&definition["needs"], &["resolve"])
+                || sdk_role)
+                || definition["continue-on-error"] != true
+                || definition["environment"] != "downloads"
+                || definition["permissions"]
+                    != if sdk_role {
+                        json!({"contents": "read", "id-token": "write"})
+                    } else {
+                        json!({"contents": "read"})
+                    }
+                || !closed_fields(step, &["id", "if", "uses", "with"], &["name"])
+                || step["id"] != "public_candidates_upload"
+                || steps
+                    .iter()
+                    .filter(|s| s["id"] == "public_candidates_upload")
+                    .count()
+                    != 1
+                || step["if"]
+                    != "${{ success() && matrix.target != 'ios' && !inputs.build_only && inputs.release_route == 'option1' }}"
+                || step["uses"]
+                    != "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+                || step["with"]
+                    != json!({"name": "public-candidates-${{ matrix.target }}", "path": "${{ runner.temp }}/reviewed-public-candidates/${{ matrix.target }}", "if-no-files-found": "error", "retention-days": 7, "compression-level": 0})
+            {
+                return None;
+            }
+            let producer = steps.iter().position(|s| s["id"] == "public_candidates")?;
+            if producer >= index
+                || steps
+                    .iter()
+                    .filter(|s| s["id"] == "public_candidates")
+                    .count()
+                    != 1
+                || !native_candidate_step(
+                    &steps[producer],
+                    "public_candidates",
+                    "bash ci/native-release/run.sh verify-build",
+                    CandidateRole::Produce,
+                )
+                || (!sdk_role
+                    && steps[producer]["env"]
+                        .get("OMNI_WINDOWS_ARTIFACT_SIGNING_DLIB")
+                        .is_some())
+                || index - producer > 2
+                || steps[producer + 1..index]
+                    .iter()
+                    .any(|s| !private_evaluation_step(s))
+            {
+                return None;
+            }
+            Some("upload")
+        }
+        "publish" | "option1_signatures" => {
+            let (expected_if, environment, contents, download, native, command, role) =
+                if job == "publish" {
+                    (
+                        PUBLISH_CANDIDATE_IF,
+                        "public-release",
+                        "write",
+                        "public_candidates_download",
+                        "publication_candidates",
+                        "bash ci/native-release/run.sh prepare-publication",
+                        CandidateRole::Prepare,
+                    )
+                } else {
+                    (
+                        SIGN_CANDIDATE_IF,
+                        "package-signing",
+                        "read",
+                        "protected_candidates_download",
+                        "public_candidate_signatures",
+                        "bash ci/native-release/run.sh sign-public-candidates",
+                        CandidateRole::Sign,
+                    )
+                };
+            if condition != expected_if
+                || !exact_needs(&definition["needs"], &["resolve", "verify"])
+                || definition["environment"] != environment
+                || definition["permissions"] != json!({"contents": contents})
+                || !definition["continue-on-error"].is_null()
+                || !closed_fields(step, &["id", "uses", "with"], &["name"])
+                || step["id"] != download
+                || steps.iter().filter(|s| s["id"] == download).count() != 1
+                || step["uses"]
+                    != "actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16"
+                || step["with"]
+                    != json!({"pattern": "public-candidates-*", "path": "release-public-candidates", "merge-multiple": false})
+                || !native_candidate_step(steps.get(index + 1)?, native, command, role)
+                || steps.iter().filter(|s| s["id"] == native).count() != 1
+            {
+                return None;
+            }
+            Some("download")
+        }
+        _ => None,
+    }
+}
+
 fn identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
@@ -236,6 +575,7 @@ struct Audit {
     seen: BTreeSet<PathBuf>,
     active: BTreeSet<PathBuf>,
     action_active: BTreeSet<PathBuf>,
+    public_candidate_exchanges: BTreeSet<(String, String, &'static str)>,
     documents: usize,
 }
 impl Audit {
@@ -251,7 +591,15 @@ impl Audit {
             code,
         ));
     }
-    fn action(&mut self, root: &Path, workflow: &str, job: &str, step: &Value) {
+    fn action(
+        &mut self,
+        root: &Path,
+        workflow: &str,
+        job: &str,
+        definition: &Value,
+        direct: bool,
+        step: &Value,
+    ) {
         let Some(uses) = step.get("uses") else { return };
         let Some(uses) = uses.as_str() else {
             self.finding(workflow, job, "action_not_reviewed");
@@ -278,9 +626,14 @@ impl Audit {
                 return;
             }
             match yaml(&path) {
-                Ok(doc) if doc["runs"]["using"] == "composite" => {
-                    self.steps(root, workflow, job, doc["runs"].get("steps"))
-                }
+                Ok(doc) if doc["runs"]["using"] == "composite" => self.steps(
+                    root,
+                    workflow,
+                    job,
+                    definition,
+                    false,
+                    doc["runs"].get("steps"),
+                ),
                 _ => self.finding(workflow, job, "action_not_reviewed"),
             }
             self.action_active.remove(&path);
@@ -298,6 +651,15 @@ impl Audit {
                 | "actions/upload-artifact"
                 | "actions/download-artifact"
         ) {
+            if direct
+                && self.action_active.is_empty()
+                && let Some(kind) =
+                    reviewed_public_candidate_exchange(workflow, job, definition, step)
+            {
+                self.public_candidate_exchanges
+                    .insert((workflow.into(), job.into(), kind));
+                return;
+            }
             self.finding(workflow, job, "actions_storage_forbidden");
             return;
         }
@@ -338,7 +700,15 @@ impl Audit {
             _ => {}
         }
     }
-    fn steps(&mut self, root: &Path, workflow: &str, job: &str, steps: Option<&Value>) {
+    fn steps(
+        &mut self,
+        root: &Path,
+        workflow: &str,
+        job: &str,
+        definition: &Value,
+        direct: bool,
+        steps: Option<&Value>,
+    ) {
         let Some(steps) = steps else { return };
         let Some(steps) = steps.as_array() else {
             self.finding(workflow, job, "workflow_invalid");
@@ -356,7 +726,7 @@ impl Audit {
             if step.get("snapshot").is_some() {
                 self.finding(workflow, job, "snapshot_forbidden")
             }
-            self.action(root, workflow, job, step);
+            self.action(root, workflow, job, definition, direct, step);
         }
     }
     fn workflow(&mut self, root: &Path, path: &Path) {
@@ -369,6 +739,20 @@ impl Audit {
             return;
         }
         if !self.seen.insert(path.to_owned()) {
+            if !self.active.is_empty() {
+                for (job, kind) in [
+                    ("verify", "upload"),
+                    ("publish", "download"),
+                    ("option1_signatures", "download"),
+                ] {
+                    if self
+                        .public_candidate_exchanges
+                        .contains(&(name.into(), job.into(), kind))
+                    {
+                        self.finding(name, job, "actions_storage_forbidden");
+                    }
+                }
+            }
             return;
         }
         self.documents += 1;
@@ -387,7 +771,15 @@ impl Audit {
                     .and_then(Value::as_object)
                     .filter(|m| !m.is_empty() && m.len() <= 256)
                 {
-                    self.jobs(root, name, jobs);
+                    self.jobs(
+                        root,
+                        name,
+                        jobs,
+                        self.active.len() == 1
+                            && document["env"].is_null()
+                            && (document["defaults"].is_null()
+                                || document["defaults"] == json!({"run": {"shell": "bash"}})),
+                    );
                 } else {
                     self.finding(name, "workflow", "workflow_inventory_empty")
                 }
@@ -396,7 +788,7 @@ impl Audit {
         }
         self.active.remove(path);
     }
-    fn jobs(&mut self, root: &Path, name: &str, jobs: &Map<String, Value>) {
+    fn jobs(&mut self, root: &Path, name: &str, jobs: &Map<String, Value>, direct: bool) {
         for (id, job) in jobs {
             if !identifier(id) || !job.is_object() {
                 self.finding(name, id, "workflow_invalid");
@@ -456,11 +848,13 @@ impl Audit {
                     _ => {}
                 }
             }
-            self.steps(root, name, id, job.get("steps"));
+            self.steps(root, name, id, job, direct, job.get("steps"));
         }
     }
     fn report(self) -> Value {
-        json!({"schema":1,"repository":REPOSITORY,"runners":RUNNERS,"findings":self.findings.into_iter().map(|(workflow,job,code)|json!({"workflow":workflow,"job":job,"code":code})).collect::<Vec<_>>()})
+        json!({"schema":1,"repository":REPOSITORY,"runners":RUNNERS,
+            "findings":self.findings.into_iter().map(|(workflow,job,code)|json!({"workflow":workflow,"job":job,"code":code})).collect::<Vec<_>>(),
+            "public_candidate_exchanges": self.public_candidate_exchanges.into_iter().map(|(workflow,job,kind)|json!({"workflow":workflow,"job":job,"kind":kind})).collect::<Vec<_>>()})
     }
 }
 

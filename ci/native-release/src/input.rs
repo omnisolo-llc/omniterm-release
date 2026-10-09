@@ -26,6 +26,8 @@ pub const RELEASE_TARGETS: &[&str] = &[
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
+    #[serde(default = "release_route")]
+    pub release_route: String,
     #[serde(default)]
     pub build_only: bool,
     #[serde(default = "all")]
@@ -48,6 +50,9 @@ pub struct Request {
 }
 fn yes() -> bool {
     true
+}
+fn release_route() -> String {
+    "option1".into()
 }
 fn all() -> String {
     "all".into()
@@ -93,8 +98,10 @@ impl Request {
         if request.version.is_empty() {
             request.version = version();
         }
-        if (!BUILD_TARGETS.contains(&request.verify_target.as_str())
-            && request.verify_target != "all")
+        if !["option1", "legacy-acceptance"].contains(&request.release_route.as_str())
+            || (request.release_route == "legacy-acceptance" && request.build_only)
+            || (!BUILD_TARGETS.contains(&request.verify_target.as_str())
+                && request.verify_target != "all")
             || (request.build_only && request.ios_action != "skip")
             || (!request.build_only
                 && (request.verify_target != "all"

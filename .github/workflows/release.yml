@@ -3,6 +3,11 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
+      release_route:
+        description: 'Option1 publishes verified candidates; legacy acceptance retains the complete protected acceptance branch'
+        type: choice
+        options: [option1, legacy-acceptance]
+        default: option1
       build_only:
         description: 'Verify builds: no release publication or production signing; optional self-signed Windows preview'
         type: boolean
@@ -13,7 +18,7 @@ on:
         options: [all, linux, windows, macos, android, web, ios]
         default: all
       preview_windows_self_sign:
-        description: 'Windows build-only: retain a self-signed evaluation ZIP as a short-lived Actions artifact'
+        description: 'Windows build-only: retain a recipient-encrypted evaluation ZIP privately for seven days'
         type: boolean
         default: false
       source_sha:
@@ -116,9 +121,68 @@ jobs:
           SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
           SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
 
+  windows_sdk:
+    name: Build and retain source-bound Windows SDK
+    needs: resolve
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && (!inputs.build_only || inputs.verify_target == 'all' || inputs.verify_target == 'windows') }}
+    environment: downloads
+    permissions:
+      contents: read
+    outputs:
+      manifest_sha256: ${{ steps.sdk.outputs.manifest_sha256 }}
+      source_sha: ${{ steps.sdk.outputs.source_sha }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+      - name: Install native Windows cross compilation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64 cmake ninja-build make perl gawk pkg-config curl patch llvm
+      - name: Produce and retain the complete reviewed SDK privately
+        id: sdk
+        run: bash ci/native-release/run.sh windows-sdk
+        env:
+          RELEASE_TARGET: windows
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
+      - name: Retain encrypted diagnostics privately
+        if: ${{ always() }}
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: windows
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: windows-sdk
+
   integration:
     name: Actual ${{ matrix.platform }} application integration
-    needs: resolve
+    needs: [resolve, windows_sdk]
     if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
     environment: downloads
     permissions:
@@ -182,6 +246,7 @@ jobs:
         run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: integration
+          OMNITERM_WINDOWS_SDK_MANIFEST_SHA256: ${{ needs.windows_sdk.outputs.manifest_sha256 }}
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
           OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
@@ -202,24 +267,34 @@ jobs:
           OMNI_INTEGRATION_DEFINES: ${{ vars[matrix.defines_variable] }}
           OMNI_CHROMEDRIVER_PORT: ${{ vars.OMNI_CHROMEDRIVER_PORT }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
-      - name: Retain encrypted integration diagnostics only
+      - name: Retain encrypted diagnostics privately
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: diagnostics-integration-${{ matrix.platform }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
-          if-no-files-found: ignore
-          retention-days: 1
-          compression-level: 0
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: integration
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: integration-${{ matrix.platform }}
 
   verify:
     name: Verify ${{ matrix.target }} build (${{ needs.resolve.outputs.workflow_id }})
-    needs: resolve
-    if: ${{ !cancelled() && needs.resolve.result == 'success' && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' }}
+    needs: [resolve, windows_sdk]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.windows_sdk.result == 'success' || (needs.windows_sdk.result == 'skipped' && inputs.verify_target != 'all' && inputs.verify_target != 'windows')) && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' }}
     continue-on-error: true
     environment: downloads
     permissions:
       contents: read
+      id-token: write
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -244,11 +319,30 @@ jobs:
       - name: Verify public launcher contracts
         run: |
           bash ci/test-native-release.sh
-          node --test ci/test_sealed_diagnostics.cjs
+          node --test ci/test_sealed_diagnostics.cjs ci/test_sealed_evaluation.cjs
+      - name: Prepare pinned Windows verification signing client
+        if: ${{ !inputs.build_only && matrix.target == 'windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $root = Join-Path $env:RUNNER_TEMP 'artifact-signing'
+          New-Item -ItemType Directory -Path $root | Out-Null
+          $archive = Join-Path $root 'client.zip'
+          Invoke-WebRequest -Uri 'https://api.nuget.org/v3-flatcontainer/microsoft.artifactsigning.client/1.0.128/microsoft.artifactsigning.client.1.0.128.nupkg' -OutFile $archive
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -cne '74bd7d27e6ce1051409c38d9b46bc8df0400ecd643d51ffbf2ac00869061e40b') { throw 'Artifact Signing client hash mismatch' }
+          $package = Join-Path $root 'package'
+          Expand-Archive -LiteralPath $archive -DestinationPath $package
+          $dlib = Join-Path $package 'bin/x64/Azure.CodeSigning.Dlib.dll'
+          if (-not (Test-Path -LiteralPath $dlib -PathType Leaf)) { throw 'Artifact Signing client is incomplete' }
+          if (-not ((dotnet --list-runtimes) -match '^Microsoft\.NETCore\.App 8\.')) { throw '.NET 8 runtime is required for Artifact Signing' }
       - name: Verify build without publishing
-        run: bash ci/native-release/run.sh run
+        id: public_candidates
+        run: bash ci/native-release/run.sh verify-build
         env:
           RELEASE_TARGET: ${{ matrix.target }}
+          OMNITERM_WINDOWS_SDK_MANIFEST_SHA256: ${{ needs.windows_sdk.outputs.manifest_sha256 }}
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
           OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
@@ -263,41 +357,64 @@ jobs:
           SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
           SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
+          BUILD_CONFIG: ${{ !inputs.build_only && secrets.BUILD_CONFIG || '{}' }}
+          SIGNING_CONFIG: ${{ !inputs.build_only && (matrix.target == 'windows' && secrets.WINDOWS_SIGNING_CONFIG || matrix.target == 'macos' && secrets.MACOS_SIGNING_CONFIG || matrix.target == 'android' && secrets.ANDROID_SIGNING_CONFIG || matrix.target == 'ios' && secrets.IOS_SIGNING_CONFIG || '') || '' }}
+          OMNI_WINDOWS_ARTIFACT_SIGNING_DLIB: ${{ !inputs.build_only && matrix.target == 'windows' && format('{0}/artifact-signing/package/bin/x64/Azure.CodeSigning.Dlib.dll', runner.temp) || '' }}
+          STORAGE_CONFIG: ${{ (!inputs.build_only || matrix.target == 'windows') && secrets.STORAGE_CONFIG || '' }}
           WINDOWS_PREVIEW_OUTPUT_DIR: ${{ inputs.preview_windows_self_sign && matrix.target == 'windows' && format('{0}/windows-preview', runner.temp) || '' }}
-      - name: Retain self-signed Windows evaluation build
-        if: ${{ inputs.preview_windows_self_sign && matrix.target == 'windows' }}
+      - name: Retain recipient-encrypted Windows evaluation privately
+        if: ${{ success() && inputs.preview_windows_self_sign && matrix.target == 'windows' }}
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: evaluation
+          RELEASE_ARTIFACT_SCOPE: verify-${{ matrix.target }}
+      - name: Retain candidate artifacts
+        id: public_candidates_upload
+        if: ${{ success() && matrix.target != 'ios' && !inputs.build_only && inputs.release_route == 'option1' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: windows-self-signed-preview-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/windows-preview/
+          name: public-candidates-${{ matrix.target }}
+          path: ${{ runner.temp }}/reviewed-public-candidates/${{ matrix.target }}
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
-      - name: Retain candidate artifacts
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: candidate-artifacts-${{ matrix.target }}
-          path: release-work/outputs/*
-          if-no-files-found: ignore
-          retention-days: 7
-          compression-level: 0
-      - name: Retain encrypted diagnostics only
+      - name: Retain encrypted diagnostics privately
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: diagnostics-${{ matrix.target }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
-          if-no-files-found: ignore
-          retention-days: 1
-          compression-level: 0
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: verify-${{ matrix.target }}
 
   validate:
     name: Validate release (${{ needs.resolve.outputs.workflow_id }})
     permissions:
       contents: write
     needs: [resolve, integration]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: downloads
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -342,22 +459,31 @@ jobs:
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
-      - name: Retain encrypted diagnostics only
+      - name: Retain encrypted diagnostics privately
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: diagnostics-validate-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
-          if-no-files-found: ignore
-          retention-days: 1
-          compression-level: 0
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: validate
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: validate
 
   downloads:
     name: Build ${{ matrix.target }} (${{ needs.resolve.outputs.workflow_id }})
     permissions:
       contents: write
     needs: [resolve, validate]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: downloads
     strategy:
       fail-fast: false
@@ -408,20 +534,29 @@ jobs:
           SIGNING_CONFIG: ${{ matrix.target == 'macos' && secrets.MACOS_SIGNING_CONFIG || matrix.target == 'android' && secrets.ANDROID_SIGNING_CONFIG || '' }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
-      - name: Retain encrypted diagnostics only
+      - name: Retain encrypted diagnostics privately
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: diagnostics-${{ matrix.target }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
-          if-no-files-found: ignore
-          retention-days: 1
-          compression-level: 0
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: downloads-${{ matrix.target }}
 
   windows_download:
     name: Build and sign Windows candidate (${{ needs.resolve.outputs.workflow_id }})
-    needs: [resolve, validate]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    needs: [resolve, validate, windows_sdk]
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: downloads
     runs-on: windows-2025
     timeout-minutes: 180
@@ -456,6 +591,7 @@ jobs:
         run: bash ci/native-release/run.sh run
         env:
           RELEASE_TARGET: windows
+          OMNITERM_WINDOWS_SDK_MANIFEST_SHA256: ${{ needs.windows_sdk.outputs.manifest_sha256 }}
           OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
           OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_PUBLISHER_KEY_BASE64 }}
           OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64: ${{ vars.OMNI_WINDOWS_SUITE_APPROVAL_KEY_BASE64 }}
@@ -474,15 +610,24 @@ jobs:
           SIGNING_CONFIG: ${{ secrets.WINDOWS_SIGNING_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
-      - name: Retain encrypted Windows build diagnostics only
+      - name: Retain encrypted diagnostics privately
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: diagnostics-downloads-windows-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
-          if-no-files-found: ignore
-          retention-days: 1
-          compression-level: 0
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: windows
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: downloads-windows
       - name: Remove temporary Windows signing client
         if: ${{ always() }}
         shell: pwsh
@@ -495,7 +640,7 @@ jobs:
     permissions:
       contents: write
     needs: [resolve, validate]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action != 'skip'
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action != 'skip' && inputs.release_route == 'legacy-acceptance'
     environment: app-store
     runs-on: macos-26
     timeout-minutes: 180
@@ -528,22 +673,31 @@ jobs:
           SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
-      - name: Retain encrypted diagnostics only
+      - name: Retain encrypted diagnostics privately
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: diagnostics-ios-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
-          if-no-files-found: ignore
-          retention-days: 1
-          compression-level: 0
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: ios
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: ios
 
   package_signatures:
     name: Sign verified Linux and browser candidate manifests (${{ needs.resolve.outputs.workflow_id }})
     permissions:
       contents: read
     needs: [resolve, validate, downloads, windows_download]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: package-signing
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -576,22 +730,31 @@ jobs:
           SIGNING_CONFIG: ${{ secrets.PACKAGE_SIGNING_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
-      - name: Retain encrypted diagnostics only
+      - name: Retain encrypted diagnostics privately
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: diagnostics-package-signatures-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
-          if-no-files-found: ignore
-          retention-days: 1
-          compression-level: 0
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: package-signatures
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: package-signatures
 
   apple_testflight:
     name: Process exact signed iOS candidate in internal TestFlight (${{ needs.resolve.outputs.workflow_id }})
     permissions:
       contents: write
     needs: [resolve, validate, ios]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action != 'skip'
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action != 'skip' && inputs.release_route == 'legacy-acceptance'
     environment: app-store
     runs-on: macos-26
     timeout-minutes: 180
@@ -624,20 +787,29 @@ jobs:
           SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
-      - name: Retain encrypted diagnostics only
+      - name: Retain encrypted diagnostics privately
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: diagnostics-apple-testflight-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
-          if-no-files-found: ignore
-          retention-days: 1
-          compression-level: 0
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: apple-testflight
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: apple-testflight
 
   installation:
     name: Install and launch actual ${{ matrix.platform }} candidate
     needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: ${{ matrix.attestation_environment }}
     permissions:
       contents: read
@@ -717,20 +889,29 @@ jobs:
           OMNI_VPN_TRUSTED_GATEWAY_POLICIES_JSON: ${{ vars.OMNI_VPN_TRUSTED_GATEWAY_POLICIES_JSON }}
           OMNI_CHROMEDRIVER_PORT: ${{ vars.OMNI_CHROMEDRIVER_PORT }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
-      - name: Retain encrypted installation diagnostics only
+      - name: Retain encrypted diagnostics privately
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: diagnostics-installation-${{ matrix.platform }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
-          if-no-files-found: ignore
-          retention-days: 1
-          compression-level: 0
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: installation
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: installation-${{ matrix.platform }}
 
   vpn_container:
     name: Managed VPN container E2E (${{ matrix.kernel_state }})
     needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: vpn-container
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
@@ -792,22 +973,31 @@ jobs:
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           GH_TOKEN: ${{ github.token }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
-      - name: Retain encrypted VPN diagnostics only
+      - name: Retain encrypted diagnostics privately
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: diagnostics-vpn-container-${{ matrix.kernel_state }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
-          if-no-files-found: ignore
-          retention-days: 1
-          compression-level: 0
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: vpn-container
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: vpn-container-${{ matrix.kernel_state }}
 
   ios_delivery:
     name: Deliver verified iOS candidate (${{ needs.resolve.outputs.workflow_id }})
     permissions:
       contents: write
     needs: [resolve, validate, ios, apple_testflight, installation, vpn_container]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action != 'skip'
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action != 'skip' && inputs.release_route == 'legacy-acceptance'
     environment: app-store
     runs-on: macos-26
     timeout-minutes: 180
@@ -840,20 +1030,29 @@ jobs:
           SIGNING_CONFIG: ${{ secrets.IOS_SIGNING_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
-      - name: Retain encrypted diagnostics only
+      - name: Retain encrypted diagnostics privately
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: diagnostics-ios-delivery-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
-          if-no-files-found: ignore
-          retention-days: 1
-          compression-level: 0
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: ios-deliver
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: ios-delivery
 
   publication_prepare:
     name: Freeze verified candidates in private storage
     needs: [resolve, validate, downloads, windows_download, ios, package_signatures, apple_testflight, installation, vpn_container, ios_delivery]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: public-release
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -887,20 +1086,29 @@ jobs:
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           GH_TOKEN: ${{ github.token }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
-      - name: Retain encrypted diagnostics only
+      - name: Retain encrypted diagnostics privately
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: diagnostics-publication-prepare-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
-          if-no-files-found: ignore
-          retention-days: 1
-          compression-level: 0
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: publication-prepare
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: publication-prepare
 
   managed_rtc_provider:
     name: Live managed RTC provider acceptance (${{ needs.resolve.outputs.workflow_id }})
     needs: [resolve, publication_prepare]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: managed-rtc-provider
     runs-on: ubuntu-24.04
     timeout-minutes: 360
@@ -933,20 +1141,29 @@ jobs:
           BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
-      - name: Retain encrypted diagnostics only
+      - name: Retain encrypted diagnostics privately
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: diagnostics-managed-rtc-provider-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
-          if-no-files-found: ignore
-          retention-days: 1
-          compression-level: 0
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: managed-rtc-provider
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: managed-rtc-provider
 
   external_tests:
     name: Actual ${{ matrix.platform }} artifact and provider acceptance
     needs: [resolve, publication_prepare, managed_rtc_provider]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: external-tests
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
@@ -1068,20 +1285,29 @@ jobs:
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           GH_TOKEN: ${{ matrix.platform == 'linux' && secrets.RELEASE_METADATA_READ_TOKEN || github.token }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
-      - name: Retain encrypted diagnostics only
+      - name: Retain encrypted diagnostics privately
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: diagnostics-external-${{ matrix.platform }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
-          if-no-files-found: ignore
-          retention-days: 1
-          compression-level: 0
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: external-tests
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: external-${{ matrix.platform }}
 
   external_windows_signing:
     name: Actual Windows Azure signing acceptance
     needs: [resolve, publication_prepare, external_tests]
-    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only
+    if: github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.release_route == 'legacy-acceptance'
     environment: external-windows-signing
     runs-on: windows-2025
     timeout-minutes: 180
@@ -1136,15 +1362,24 @@ jobs:
           SIGNING_CONFIG: ${{ secrets.WINDOWS_SIGNING_CONFIG }}
           GH_TOKEN: ${{ github.token }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
-      - name: Retain encrypted Windows diagnostics only
+      - name: Retain encrypted diagnostics privately
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: diagnostics-external-windows-signing-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
-          if-no-files-found: ignore
-          retention-days: 1
-          compression-level: 0
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: external-windows-signing
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: external-windows-signing
       - name: Remove temporary Windows signing client
         if: ${{ always() }}
         shell: pwsh
@@ -1155,7 +1390,7 @@ jobs:
   apple_submission:
     name: Submit accepted iOS candidate for public review
     needs: [resolve, validate, ios_delivery, publication_prepare, vpn_container, external_tests, external_windows_signing]
-    if: ${{ !cancelled() && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action == 'submit' && needs.ios_delivery.result == 'success' && needs.vpn_container.result == 'success' && needs.external_tests.result == 'success' && needs.external_windows_signing.result == 'success' }}
+    if: ${{ !cancelled() && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && !inputs.build_only && inputs.ios_action == 'submit' && needs.ios_delivery.result == 'success' && needs.vpn_container.result == 'success' && needs.external_tests.result == 'success' && needs.external_windows_signing.result == 'success' && inputs.release_route == 'legacy-acceptance' }}
     environment: app-store
     runs-on: macos-26
     timeout-minutes: 180
@@ -1191,19 +1426,93 @@ jobs:
           STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
           GH_TOKEN: ${{ github.token }}
           DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
-      - name: Retain encrypted submission diagnostics only
+      - name: Retain encrypted diagnostics privately
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: ios-submit
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: apple-submission
+
+  option1_signatures:
+    name: Sign exact verified public candidate bytes
+    needs: [resolve, verify]
+    if: ${{ !cancelled() && !inputs.build_only && inputs.release_route == 'option1' && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && needs.resolve.result == 'success' }}
+    environment: package-signing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: diagnostics-apple-submission-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/encrypted-diagnostics/diagnostics.sealed
-          if-no-files-found: ignore
-          retention-days: 1
-          compression-level: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+          package-manager-cache: false
+      - name: Download exact public candidates for protected signing
+        id: protected_candidates_download
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          path: release-public-candidates
+          pattern: public-candidates-*
+          merge-multiple: false
+      - name: Sign the exact exported public candidate bytes
+        id: public_candidate_signatures
+        run: bash ci/native-release/run.sh sign-public-candidates
+        env:
+          RELEASE_TARGET: publish
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          INPUT_PUBLIC_CANDIDATES_DIR: ${{ github.workspace }}/release-public-candidates
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          SIGNING_CONFIG: ${{ secrets.PACKAGE_SIGNING_CONFIG }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
+
+      - name: Retain encrypted signing diagnostics privately
+        if: ${{ always() }}
+        run: bash ci/native-release/run.sh retain-artifacts
+        env:
+          RELEASE_TARGET: publish
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          RELEASE_ARTIFACT_KIND: diagnostics
+          RELEASE_ARTIFACT_SCOPE: option1-signatures
 
   publish:
     name: Publish release (${{ needs.resolve.outputs.workflow_id }})
-    if: ${{ !cancelled() && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && needs.resolve.result == 'success' }}
+    if: ${{ !cancelled() && !inputs.build_only && github.repository == 'omnisolo-llc/omniterm-release' && github.ref == 'refs/heads/main' && needs.resolve.result == 'success' && inputs.release_route == 'option1' }}
     needs: [resolve, verify]
     environment: public-release
     runs-on: ubuntu-24.04
@@ -1215,46 +1524,44 @@ jobs:
         with:
           persist-credentials: false
       - name: Download all candidate artifacts
+        id: public_candidates_download
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
-          path: release-artifacts
-          pattern: candidate-artifacts-*
-          merge-multiple: true
-      - name: Publish GitHub Release
+          path: release-public-candidates
+          pattern: public-candidates-*
+          merge-multiple: false
+      - name: Prepare and verify the public publication plan
+        id: publication_candidates
+        run: bash ci/native-release/run.sh prepare-publication
         env:
-          GH_TOKEN: ${{ secrets.PRIVATE_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.resolve.outputs.version }}
-          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
-        run: |
-          mkdir -p release-dist
-          find release-artifacts -type f -exec cp {} release-dist/ \; 2>/dev/null || true
-          cd release-dist
-          if [ -n "$(ls -A . 2>/dev/null)" ]; then
-            (ls -A | grep -v '^SHA256SUMS$' | xargs sha256sum > SHA256SUMS) 2>/dev/null || true
-            echo "Publishing release v${VERSION} with artifacts:"
-            ls -la
-            gh release create "v${VERSION}" \
-              --repo omnisolo-llc/omniterm \
-              --title "Omniterm v${VERSION}" \
-              --notes "Release v${VERSION} (${SOURCE_SHA})" \
-              --latest \
-              * || gh release upload "v${VERSION}" --repo omnisolo-llc/omniterm * --clobber
-            gh release create "v${VERSION}" \
-              --repo omnisolo-llc/omniterm-release \
-              --title "Omniterm v${VERSION}" \
-              --notes "Release v${VERSION} (${SOURCE_SHA})" \
-              --latest \
-              * || gh release upload "v${VERSION}" --repo omnisolo-llc/omniterm-release * --clobber
-          else
-            echo "No artifact files found; creating release tag"
-            gh release create "v${VERSION}" \
-              --repo omnisolo-llc/omniterm \
-              --title "Omniterm v${VERSION}" \
-              --notes "Release v${VERSION} (${SOURCE_SHA})" \
-              --latest || true
-            gh release create "v${VERSION}" \
-              --repo omnisolo-llc/omniterm-release \
-              --title "Omniterm v${VERSION}" \
-              --notes "Release v${VERSION} (${SOURCE_SHA})" \
-              --latest || true
-          fi
+          RELEASE_TARGET: publish
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          INPUT_PUBLIC_CANDIDATES_DIR: ${{ github.workspace }}/release-public-candidates
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}
+          STORAGE_CONFIG: ${{ secrets.STORAGE_CONFIG }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          SOURCE_DEPLOY_KEY: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.SOURCE_KNOWN_HOSTS }}
+          SOURCE_SUBMODULE_TOKEN: ${{ secrets.SOURCE_SUBMODULE_TOKEN }}
+          SOURCE_SUBMODULE_DEPLOY_KEY_BASE64: ${{ secrets.SOURCE_SUBMODULE_DEPLOY_KEY_BASE64 }}
+          DIAGNOSTICS_PUBLIC_KEY: ${{ secrets.DIAGNOSTICS_PUBLIC_KEY }}
+      - name: Publish the verified public candidate bytes
+        run: bash ci/native-release/run.sh publish-candidates
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPROVED_NATIVE_VERIFIER_SHA256: ${{ steps.publication_candidates.outputs.native_verifier_sha256 }}
+          APPROVED_PUBLICATION_PLAN_SHA256: ${{ steps.publication_candidates.outputs.publication_plan_sha256 }}
+          RELEASE_TARGET: publish
+          RELEASE_REQUEST: ${{ toJSON(inputs) }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          RESOLVED_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_BRANCH: ${{ secrets.SOURCE_BRANCH }}
+          OMNITERM_VPN_PROVIDER_PUBLIC_KEY: ${{ vars.OMNITERM_VPN_PROVIDER_PUBLIC_KEY }}
+          BUILD_CONFIG: ${{ secrets.BUILD_CONFIG }}

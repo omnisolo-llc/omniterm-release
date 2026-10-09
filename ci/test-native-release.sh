@@ -17,16 +17,28 @@ check() {
   local phase="$1"
   shift
   printf 'Native contract phase: %s\n' "$phase"
-  if ! "$@" >>"$guard/bootstrap.log" 2>&1; then
+  if "$@" >>"$guard/bootstrap.log" 2>&1; then
+    return 0
+  else
+    local status=$?
     printf 'Native contract failure phase: %s\n' "$phase" >&2
-    find "$here/native-release/src" "$here/native-release/tests" -type f -name '*.rs' -exec cat {} + > "$guard/public-identifiers.rs"
+    printf 'Native contract command exit: %s\n' "$status" >&2
+    while IFS= read -r -d '' source; do
+      local target="${source##*/}"
+      target="${target%.rs}"
+      if [[ "$target" =~ ^[A-Za-z_][A-Za-z0-9_-]{0,127}$ ]]; then
+        printf 'Native public target: %s\n' "$target"
+      fi
+      cat -- "$source"
+      printf '\n'
+    done < <(find "$here/native-release/src" "$here/native-release/tests" -type f -name '*.rs' -print0) > "$guard/public-identifiers.rs"
     awk -f "$here/native-failure-summary.awk" "$guard/public-identifiers.rs" "$guard/bootstrap.log" >&2
     echo 'Native contract check failed; raw compiler and test output remains private.' >&2
     if [[ -n "${DIAGNOSTICS_PUBLIC_KEY:-}" && -n "${RUNNER_TEMP:-}" ]]; then
       touch "$guard/task.log"
       node "$here/seal_diagnostics.cjs" "$guard" "$RUNNER_TEMP/encrypted-diagnostics/diagnostics.sealed" >/dev/null 2>&1 || true
     fi
-    exit 1
+    exit "$status"
   fi
 }
 if ! rustup run 1.95.0 cargo fmt --version >>"$guard/bootstrap.log" 2>&1 \

@@ -203,7 +203,11 @@ fn validate_provider_public_key(env: &Environment) -> Result<()> {
 }
 
 pub fn validate_configuration(env: &Environment, command: &str) -> Result<Request> {
-    if command == "agent-run" {
+    if command == "agent-run"
+        || (command == "retain-artifacts"
+            && env.get("GITHUB_WORKFLOW_REF").map(String::as_str)
+                == Some(crate::agent::WORKFLOW_REF))
+    {
         crate::agent::validate_authority(env)?;
     } else {
         validate_authority(env)?;
@@ -211,6 +215,10 @@ pub fn validate_configuration(env: &Environment, command: &str) -> Result<Reques
     let target = required(env, "RELEASE_TARGET")?;
     if (command == "resolve" && target != "resolve")
         || (command == "verify-ios" && target != "ios")
+        || (command == "windows-sdk" && target != "windows")
+        || (command == "verify-build" && !crate::input::BUILD_TARGETS.contains(&target))
+        || (command == "prepare-publication" && target != "publish")
+        || (command == "sign-public-candidates" && target != "publish")
         || (command == "run" && target == "resolve")
     {
         return Err("Native workflow target mismatch");
@@ -233,7 +241,7 @@ pub fn validate_configuration(env: &Environment, command: &str) -> Result<Reques
         if target != "resolve" && required(env, "RESOLVED_SOURCE_SHA")? != request.source_sha {
             return Err("Full release source differs from resolver");
         }
-        if target != "resolve" {
+        if target != "resolve" && !["windows-sdk", "retain-artifacts"].contains(&command) {
             let config = crate::json::parse(required(env, "BUILD_CONFIG")?.as_bytes())?;
             if config
                 .get("OMNI_ENABLE_VPN")
@@ -251,11 +259,14 @@ pub fn validate_configuration(env: &Environment, command: &str) -> Result<Reques
     if !request.builder_sha.is_empty() && request.builder_sha != required(env, "GITHUB_SHA")? {
         return Err("Requested builder does not match workflow revision");
     }
-    if command != "agent-run" && target != "resolve" {
+    if !["agent-run", "windows-sdk", "retain-artifacts"].contains(&command) && target != "resolve" {
         validate_provider_public_key(env)?;
     }
     required(env, "SOURCE_DEPLOY_KEY")?;
     required(env, "SOURCE_KNOWN_HOSTS")?;
+    if ["windows-sdk", "retain-artifacts"].contains(&command) {
+        required(env, "STORAGE_CONFIG")?;
+    }
     Ok(request)
 }
 pub fn write_outputs(env: &Environment, values: &[(&str, &str)]) -> Result<()> {
@@ -353,7 +364,7 @@ pub fn decode_submodule_key(value: &str) -> Result<Vec<u8>> {
     }
     Ok(format!("{}\n", text.replace("\r\n", "\n").trim()).into_bytes())
 }
-fn private_file(path: &Path, bytes: &[u8]) -> Result<fs::File> {
+pub(crate) fn private_file(path: &Path, bytes: &[u8]) -> Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.write(true).read(true).create_new(true);
     #[cfg(unix)]
@@ -433,6 +444,17 @@ fn strip_verbatim(path: PathBuf) -> PathBuf {
 
 pub fn run(command: &str) -> Result<()> {
     let mut env: Environment = std::env::vars().collect();
+    if command == "publish-candidates" {
+        if std::env::args().len() != 2 {
+            return Err("Unexpected native publication arguments");
+        }
+        let plan = crate::publication_candidates::verify_prepared(&env)?;
+        let directory = crate::publication_candidates::directory(&env)?;
+        let mut github = crate::publication_candidates::GitHub::new(&env, &directory)?;
+        crate::publication_candidates::publish(&plan, &mut github)?;
+        println!("Verified public release publication completed.");
+        return Ok(());
+    }
     if command == "validate-request" {
         if std::env::args().len() != 2 {
             return Err("Unexpected native release arguments");
@@ -517,13 +539,34 @@ pub fn run(command: &str) -> Result<()> {
         println!("Verified unchanged native source tree.");
         return Ok(());
     }
-    if !["resolve", "verify-ios", "run", "agent-run"].contains(&command) {
+    if ![
+        "resolve",
+        "verify-ios",
+        "run",
+        "verify-build",
+        "prepare-publication",
+        "sign-public-candidates",
+        "agent-run",
+        "windows-sdk",
+        "retain-artifacts",
+    ]
+    .contains(&command)
+    {
         return Err("Unsupported native command; no legacy fallback");
     }
     if std::env::args().len() != 2 {
         return Err("Unexpected native release arguments");
     }
     let mut request = validate_configuration(&env, command)?;
+    let retained = if command == "retain-artifacts" {
+        let Some(artifact) = crate::retained_artifacts::artifact(&env, &request)? else {
+            println!("No encrypted diagnostic produced by this job.");
+            return Ok(());
+        };
+        Some(artifact)
+    } else {
+        None
+    };
     if command == "verify-ios" && !cfg!(target_os = "macos") {
         return Err("Native iOS verification requires macOS");
     }
@@ -641,6 +684,8 @@ pub fn run(command: &str) -> Result<()> {
             println!("Native release inputs resolved.");
             return Ok(());
         }
+        // Capture the acquired immutable revision before any native child starts.
+        env.insert("RESOLVED_SOURCE_SHA".into(), request.source_sha.clone());
         source::git(
             &src,
             &git_args(&["checkout", "--quiet", "--detach", &request.source_sha]),
@@ -651,7 +696,10 @@ pub fn run(command: &str) -> Result<()> {
         source::materialize_scoped(
             &src,
             &request.source_sha,
-            if command == "agent-run" {
+            if command == "agent-run"
+                || (command == "retain-artifacts"
+                    && crate::retained_artifacts::pipeline_kind(&env)? == "agent")
+            {
                 None
             } else {
                 Some(builder.as_str())
@@ -682,7 +730,40 @@ pub fn run(command: &str) -> Result<()> {
                 .seek(SeekFrom::End(0))
                 .map_err(|_| "Private build log unavailable")?;
         }
-        build_and_dispatch(&src, &root, &env, &request, command, &mut bootstrap)?;
+        if command == "windows-sdk" {
+            let digest = crate::windows_sdk::build(&src, &env, &mut bootstrap)?;
+            env.insert(
+                "OMNITERM_WINDOWS_SDK_MANIFEST_SHA256".into(),
+                digest.clone(),
+            );
+            build_native_stage(
+                &src,
+                &root,
+                &env,
+                NativeStage::WindowsSdk(&request, "put"),
+                &mut bootstrap,
+            )?;
+            write_outputs(
+                &env,
+                &[
+                    ("manifest_sha256", &digest),
+                    ("source_sha", &request.source_sha),
+                ],
+            )?;
+        } else if command == "retain-artifacts" {
+            build_native_stage(
+                &src,
+                &root,
+                &env,
+                NativeStage::RetainedArtifacts(
+                    &request,
+                    retained.as_ref().ok_or("Encrypted artifact missing")?,
+                ),
+                &mut bootstrap,
+            )?;
+        } else {
+            build_and_dispatch(&src, &root, &env, &request, command, &mut bootstrap)?;
+        }
         println!("Native release task completed.");
         Ok(())
     })();
@@ -697,7 +778,7 @@ pub fn run(command: &str) -> Result<()> {
         );
         eprint!("{}", diagnostic_phase(&root.join("status.json")));
     }
-    if result.is_err() || command != "resolve" {
+    if command != "retain-artifacts" && (result.is_err() || command != "resolve") {
         seal(&root, &env);
     }
     result
@@ -741,6 +822,8 @@ pub fn build_and_dispatch_ci(
 enum NativeStage<'a> {
     Release(&'a Request, &'a str),
     Ci(&'a crate::ci_request::SourceCiRequest),
+    WindowsSdk(&'a Request, &'a str),
+    RetainedArtifacts(&'a Request, &'a crate::retained_artifacts::Artifact),
 }
 fn build_native_stage(
     src: &Path,
@@ -752,6 +835,8 @@ fn build_native_stage(
     let source_sha = match &stage {
         NativeStage::Release(request, _) => request.source_sha.as_str(),
         NativeStage::Ci(request) => request.identity.source_sha.as_str(),
+        NativeStage::WindowsSdk(request, _) => request.source_sha.as_str(),
+        NativeStage::RetainedArtifacts(request, _) => request.source_sha.as_str(),
     };
     for name in ["identity", "known_hosts", "website-identity"] {
         if root.join(name).exists() {
@@ -851,8 +936,21 @@ fn build_native_stage(
         return Err("Native release executable missing");
     }
     let mut task = match &stage {
+        NativeStage::Release(_, command)
+            if [
+                "verify-build",
+                "prepare-publication",
+                "sign-public-candidates",
+            ]
+            .contains(command) =>
+        {
+            crate::publication_candidates::verification_environment(env)
+        }
         NativeStage::Release(_, _) => task_environment(env),
         NativeStage::Ci(request) => crate::ci_request::ci_child_environment(env, request)?,
+        NativeStage::WindowsSdk(_, _) | NativeStage::RetainedArtifacts(_, _) => {
+            crate::retained_artifacts::storage_environment(env, src, source_sha)?
+        }
     };
     for key in [
         "HOME",
@@ -866,6 +964,16 @@ fn build_native_stage(
     let (arguments, timeout) = match &stage {
         NativeStage::Release(request, command) => {
             task.insert("RELEASE_REQUEST".into(), request.normalized()?);
+            task.remove("WINDOWS_PREVIEW_OUTPUT_DIR");
+            if request.preview_windows_self_sign && required(env, "RELEASE_TARGET")? == "windows" {
+                required(env, "DIAGNOSTICS_PUBLIC_KEY")?;
+                task.insert(
+                    "WINDOWS_PREVIEW_OUTPUT_DIR".into(),
+                    crate::retained_artifacts::preview_directory(env)?
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
             task.insert(
                 "RELEASE_INTEGRATION_SOURCE_REPOSITORY".into(),
                 required(env, "SOURCE_REPOSITORY")?.into(),
@@ -874,17 +982,61 @@ fn build_native_stage(
                 "RELEASE_INTEGRATION_SOURCE_REF".into(),
                 format!("refs/heads/{}", required(env, "SOURCE_BRANCH")?),
             );
-            let args = vec![
-                if *command == "agent-run" {
-                    "agent-run".into()
-                } else {
-                    "run".into()
-                },
-                "--root".into(),
-                src.to_string_lossy().into_owned(),
-                "--work-dir".into(),
-                work.to_string_lossy().into_owned(),
-            ];
+            let args = if *command == "sign-public-candidates" {
+                crate::publication_candidates::request(env)?;
+                task.insert(
+                    "OMNI_RELEASE_SOURCE_ROOT".into(),
+                    src.to_string_lossy().into_owned(),
+                );
+                vec![
+                    "helper".into(),
+                    "artifacts".into(),
+                    "sign-public-candidates".into(),
+                    "--input".into(),
+                    required(env, "INPUT_PUBLIC_CANDIDATES_DIR")?.into(),
+                    "--work".into(),
+                    work.to_string_lossy().into_owned(),
+                ]
+            } else if *command == "prepare-publication" {
+                crate::publication_candidates::request(env)?;
+                task.remove("SIGNING_CONFIG");
+                let publication = crate::publication_candidates::directory(env)?;
+                if fs::symlink_metadata(&publication).is_ok() {
+                    return Err("Public publication preparation must be fresh");
+                }
+                directory(&publication)?;
+                task.insert(
+                    "OMNI_RELEASE_SOURCE_ROOT".into(),
+                    src.to_string_lossy().into_owned(),
+                );
+                vec![
+                    "helper".into(),
+                    "artifacts".into(),
+                    "prepare-publication-candidates".into(),
+                    "--input".into(),
+                    required(env, "INPUT_PUBLIC_CANDIDATES_DIR")?.into(),
+                    "--output".into(),
+                    publication.join("files").to_string_lossy().into_owned(),
+                    "--plan".into(),
+                    publication.join("plan.json").to_string_lossy().into_owned(),
+                    "--work".into(),
+                    work.to_string_lossy().into_owned(),
+                ]
+            } else {
+                vec![
+                    if *command == "agent-run" {
+                        "agent-run".into()
+                    } else if *command == "verify-build" {
+                        "verify-build".into()
+                    } else {
+                        "run".into()
+                    },
+                    "--root".into(),
+                    src.to_string_lossy().into_owned(),
+                    "--work-dir".into(),
+                    work.to_string_lossy().into_owned(),
+                ]
+            };
             let timeout = match required(env, "RELEASE_TARGET")? {
                 "integration" => 21600,
                 "installation" => 10800,
@@ -910,6 +1062,65 @@ fn build_native_stage(
                 10000,
             )
         }
+        NativeStage::WindowsSdk(_, operation) => {
+            let runner = PathBuf::from(required(env, "RUNNER_TEMP")?)
+                .canonicalize()
+                .map_err(|_| "SDK runner directory invalid")?;
+            let prefix = runner.join("windows-native-sdk");
+            task.insert(
+                "OMNI_RELEASE_SOURCE_ROOT".into(),
+                src.to_string_lossy().into_owned(),
+            );
+            (
+                vec![
+                    "helper".into(),
+                    "artifacts".into(),
+                    format!("windows-sdk-{operation}"),
+                    "--prefix".into(),
+                    prefix.to_string_lossy().into_owned(),
+                    "--manifest-sha256".into(),
+                    required(env, "OMNITERM_WINDOWS_SDK_MANIFEST_SHA256")?.into(),
+                ],
+                10000,
+            )
+        }
+        NativeStage::RetainedArtifacts(request, artifact) => {
+            task.insert("RELEASE_ARTIFACT_KIND".into(), artifact.kind.clone());
+            task.insert("RELEASE_ARTIFACT_SCOPE".into(), artifact.scope.clone());
+            if artifact.kind == "agent-packages" {
+                (
+                    vec![
+                        "helper".into(),
+                        "artifacts".into(),
+                        "retain-agent-packages".into(),
+                        "--directory".into(),
+                        artifact.path.to_string_lossy().into_owned(),
+                        "--platform".into(),
+                        required(env, "OMNI_AGENT_PLATFORM")?.into(),
+                        "--version".into(),
+                        request.version.clone(),
+                        "--scope".into(),
+                        artifact.scope.clone(),
+                    ],
+                    900,
+                )
+            } else {
+                (
+                    vec![
+                        "helper".into(),
+                        "artifacts".into(),
+                        "retain-build-artifacts".into(),
+                        "--input".into(),
+                        artifact.path.to_string_lossy().into_owned(),
+                        "--kind".into(),
+                        artifact.kind.clone(),
+                        "--scope".into(),
+                        artifact.scope.clone(),
+                    ],
+                    600,
+                )
+            }
+        }
     };
     task.insert("SOURCE".into(), src.to_string_lossy().into_owned());
     task.insert(
@@ -925,6 +1136,40 @@ fn build_native_stage(
         task.insert(key.into(), root.join(name).to_string_lossy().into_owned());
     }
     println!("Native release phase: private-task");
+    if matches!(&stage, NativeStage::Release(_, _))
+        && cfg!(windows)
+        && (required(env, "RELEASE_TARGET")? == "windows"
+            || (required(env, "RELEASE_TARGET")? == "integration"
+                && env.get("OMNI_INTEGRATION_PLATFORM").map(String::as_str) == Some("windows")))
+    {
+        let runner = PathBuf::from(required(env, "RUNNER_TEMP")?)
+            .canonicalize()
+            .map_err(|_| "SDK runner directory invalid")?;
+        let prefix = runner.join("windows-native-sdk");
+        let sdk_task = crate::retained_artifacts::storage_environment(env, src, source_sha)?;
+        process::run(
+            &binary,
+            &[
+                "helper".into(),
+                "artifacts".into(),
+                "windows-sdk-get".into(),
+                "--prefix".into(),
+                prefix.to_string_lossy().into_owned(),
+                "--manifest-sha256".into(),
+                required(env, "OMNITERM_WINDOWS_SDK_MANIFEST_SHA256")?.into(),
+            ],
+            root,
+            &sdk_task,
+            Duration::from_secs(1000),
+            Some(bootstrap),
+        )?;
+        task.insert(
+            "OMNITERM_FREERDP_PREFIX".into(),
+            crate::retained_artifacts::ordinary(&prefix)?
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
     let outcome = process::run(
         &binary,
         &arguments,
@@ -959,5 +1204,21 @@ fn build_native_stage(
     frozen.verify()?;
     source::verify_tools(src, &checkout)?;
     source::verify(src, source_sha, &checkout, false, 0)?;
+    if let NativeStage::Release(_, "prepare-publication") = &stage {
+        let (verifier, plan) = crate::publication_candidates::retain_verifier(env, &binary)?;
+        write_outputs(
+            env,
+            &[
+                ("native_verifier_sha256", &verifier),
+                ("publication_plan_sha256", &plan),
+            ],
+        )?;
+    }
+    if let NativeStage::Release(request, _) = &stage
+        && request.preview_windows_self_sign
+        && required(env, "RELEASE_TARGET")? == "windows"
+    {
+        crate::retained_artifacts::seal_evaluation(env, request, root, bootstrap)?;
+    }
     Ok(())
 }

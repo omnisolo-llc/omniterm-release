@@ -9,10 +9,10 @@ fn public_contract_summary_does_not_echo_private_output_or_unknown_identifiers()
     let log = temporary.path().join("output.log");
     fs::write(
         &source,
-        "fn known_failure() { }\nfn another_public_case() { }\n",
+        "Native public target: diagnostic_summary\nfn known_failure() { }\nfn another_public_case() { }\n",
     )
     .unwrap();
-    fs::write(&log, "secret raw output\nthread 'x' panicked at /private/path\ntest module::known_failure ... FAILED\ntest secret_identifier ... FAILED\nerror[E0007]: private compiler text\n##[error]untrusted workflow command\n").unwrap();
+    fs::write(&log, "secret raw output\nthread 'x' panicked at /private/path\n     Running tests/diagnostic_summary.rs (/private/path/PRIVATE_CANARY)\ntest module::known_failure ... FAILED\ntest secret_identifier ... FAILED\nerror[E0007]: PRIVATE_CANARY private compiler text\n##[error]untrusted workflow command\ntest module::another_public_case ... PRIVATE_CANARY raw incomplete suffix\n").unwrap();
     let parser = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -23,16 +23,26 @@ fn public_contract_summary_does_not_echo_private_output_or_unknown_identifiers()
     );
     let output = Command::new("awk")
         .arg("-f")
-        .arg(parser)
-        .arg(source)
-        .arg(log)
+        .arg(&parser)
+        .arg(&source)
+        .arg(&log)
         .output()
         .unwrap();
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "Native contract failed test: known_failure\nNative compiler diagnostic: E0007\n"
+        "Native contract last Cargo test target: diagnostic_summary\nNative contract last observed test: another_public_case\nNative contract failed test: known_failure\nNative compiler diagnostic: E0007\n"
     );
+    fs::write(&log, "     Running tests/PRIVATE_CANARY.rs (/private/PRIVATE_CANARY)\ntest unknown_PRIVATE_CANARY ... private metadata\n").unwrap();
+    let unknown = Command::new("awk")
+        .arg("-f")
+        .arg(parser)
+        .arg(source)
+        .arg(log)
+        .output()
+        .unwrap();
+    assert!(unknown.status.success());
+    assert!(unknown.stdout.is_empty());
 }
 #[test]
 fn process_boundary_summary_accepts_only_closed_enumerations() {
@@ -65,16 +75,22 @@ fn failure_summary_is_bounded_and_has_no_raw_log_fallback() {
     let log = temporary.path().join("output.log");
     fs::write(
         &source,
-        (0..100)
-            .map(|n| format!("fn case_{n}() {{}}\n"))
-            .collect::<String>(),
+        format!(
+            "Native public target: diagnostic_summary\n{}",
+            (0..100)
+                .map(|n| format!("fn case_{n}() {{}}\n"))
+                .collect::<String>()
+        ),
     )
     .unwrap();
     fs::write(
         &log,
-        (0..100)
-            .map(|n| format!("test module::case_{n} ... FAILED\n"))
-            .collect::<String>(),
+        format!(
+            "     Running tests/diagnostic_summary.rs (/private/PRIVATE_CANARY)\n{}",
+            (0..100)
+                .map(|n| format!("test module::case_{n} ... FAILED\n"))
+                .collect::<String>()
+        ),
     )
     .unwrap();
     let parser = Path::new(env!("CARGO_MANIFEST_DIR"))
