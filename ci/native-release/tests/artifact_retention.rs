@@ -116,15 +116,34 @@ fn retention_child_gets_only_storage_authority_and_captured_identity() {
 #[test]
 fn retention_cannot_select_files_or_turn_missing_evaluation_into_success() {
     let temp = tempfile::tempdir().unwrap();
-    let mut env = environment(temp.path());
+    let physical_parent = temp.path().join("physical");
+    fs::create_dir(&physical_parent).unwrap();
+    fs::create_dir(physical_parent.join("runner")).unwrap();
+    // An ancestor alias reproduces native temporary-directory spelling while
+    // the runner leaf stays an ordinary directory on every platform.
+    #[cfg(unix)]
+    let runner_parent = {
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&physical_parent, &alias).unwrap();
+        alias
+    };
+    #[cfg(not(unix))]
+    let runner_parent = physical_parent;
+    let runner = runner_parent.join("runner");
+    let metadata = fs::symlink_metadata(&runner).unwrap();
+    assert!(metadata.is_dir() && !metadata.is_symlink());
+    let canonical_runner = runner.canonicalize().unwrap();
+    #[cfg(unix)]
+    assert_ne!(runner, canonical_runner);
+    let mut env = environment(&runner);
     assert!(
         retained_artifacts::artifact(&env, &request(false))
             .unwrap()
             .is_none()
     );
-    fs::create_dir(temp.path().join("encrypted-diagnostics")).unwrap();
+    fs::create_dir(runner.join("encrypted-diagnostics")).unwrap();
     fs::write(
-        temp.path().join("encrypted-diagnostics/diagnostics.sealed"),
+        runner.join("encrypted-diagnostics/diagnostics.sealed"),
         b"fixture-cipher",
     )
     .unwrap();
@@ -133,7 +152,7 @@ fn retention_cannot_select_files_or_turn_missing_evaluation_into_success() {
         .unwrap();
     assert_eq!(
         input.path,
-        temp.path().join("encrypted-diagnostics/diagnostics.sealed")
+        canonical_runner.join("encrypted-diagnostics/diagnostics.sealed")
     );
     for value in [
         "../private",
@@ -149,9 +168,9 @@ fn retention_cannot_select_files_or_turn_missing_evaluation_into_success() {
     env.insert("RELEASE_ARTIFACT_KIND".into(), "evaluation".into());
     assert!(retained_artifacts::artifact(&env, &request(false)).is_err());
     assert!(retained_artifacts::artifact(&env, &request(true)).is_err());
-    fs::create_dir(temp.path().join("encrypted-evaluation")).unwrap();
+    fs::create_dir(runner.join("encrypted-evaluation")).unwrap();
     fs::write(
-        temp.path().join("encrypted-evaluation/evaluation.sealed"),
+        runner.join("encrypted-evaluation/evaluation.sealed"),
         b"fixture-cipher",
     )
     .unwrap();
