@@ -390,6 +390,74 @@ fn numeric_versions_source_defaults_resolution_preview_and_boolean_contracts_are
     }
 }
 #[test]
+fn workflow_output_names_accept_sdk_and_publication_sha256_identifiers() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = temp.path().join("output");
+    fs::write(&output, "previous=retained\n").unwrap();
+    let e = Environment::from([("GITHUB_OUTPUT".into(), output.to_str().unwrap().into())]);
+    launch::write_outputs(
+        &e,
+        &[
+            ("manifest_sha256", "sdk-digest"),
+            ("native_verifier_sha256", "verifier-digest"),
+            ("publication_plan_sha256", "plan-digest"),
+            ("_receipt_2", "receipt"),
+            ("_", "empty-value-follows"),
+            ("a0", ""),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(&output).unwrap(),
+        "previous=retained\nmanifest_sha256=sdk-digest\nnative_verifier_sha256=verifier-digest\npublication_plan_sha256=plan-digest\n_receipt_2=receipt\n_=empty-value-follows\na0=\n"
+    );
+}
+
+#[test]
+fn workflow_output_names_reject_empty_leading_digits_and_injection_without_appending() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = temp.path().join("output");
+    fs::write(&output, "previous=retained\n").unwrap();
+    let e = Environment::from([("GITHUB_OUTPUT".into(), output.to_str().unwrap().into())]);
+    for key in [
+        "",
+        "0leading",
+        "Manifest",
+        "manifest-sha256",
+        "manifest.sha256",
+        "manifest=sha256",
+        "manifest/sha256",
+        "manifest sha256",
+        "manifest\ninjected",
+        "manifest\rinjected",
+        "manifest\0injected",
+        "manifést",
+    ] {
+        assert_eq!(
+            launch::write_outputs(&e, &[("source_sha", "safe"), (key, "digest")]).err(),
+            Some("Unsafe workflow output value"),
+            "{key:?}"
+        );
+        assert_eq!(fs::read(&output).unwrap(), b"previous=retained\n");
+    }
+}
+
+#[test]
+fn workflow_output_values_reject_injection_without_appending_earlier_outputs() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = temp.path().join("output");
+    fs::write(&output, "previous=retained\n").unwrap();
+    let e = Environment::from([("GITHUB_OUTPUT".into(), output.to_str().unwrap().into())]);
+    for value in ["safe\nEVIL=x", "safe\rEVIL=x", "safe\0EVIL=x"] {
+        assert_eq!(
+            launch::write_outputs(&e, &[("source_sha", "safe"), ("builder_sha", value)]).err(),
+            Some("Unsafe workflow output value")
+        );
+        assert_eq!(fs::read(&output).unwrap(), b"previous=retained\n");
+    }
+}
+
+#[test]
 fn workflow_output_file_rejects_links_directories_and_newline_injection() {
     let temp = tempfile::tempdir().unwrap();
     let output = temp.path().join("output");

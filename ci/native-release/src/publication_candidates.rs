@@ -195,6 +195,9 @@ pub struct FileRecord {
     pub sha256: String,
     pub content_type: String,
 }
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct PlanDocument {
@@ -203,6 +206,8 @@ struct PlanDocument {
     release: Value,
     repository: String,
     files: BTreeMap<String, FileRecord>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    windows_self_signed: bool,
 }
 pub struct Plan {
     document: PlanDocument,
@@ -214,10 +219,16 @@ impl Plan {
         &self.document.files
     }
     pub fn notes(&self) -> String {
+        let disclosure = if self.document.windows_self_signed {
+            "\n\nWindows executables and libraries use a self-signed Authenticode certificate. Windows may show trust warnings because this certificate is not trusted by a public certificate authority. Verify the detached OpenPGP package signatures using the reviewed release signing key. The Windows ZIP includes omniterm-windows-signing.cer as a public DER certificate; no private key material is included.\n"
+        } else {
+            ""
+        };
         format!(
-            "Omniterm v{} ({}).\n<!-- native-publication:{} -->",
+            "Omniterm v{} ({}).{}\n<!-- native-publication:{} -->",
             self.document.release["version"].as_str().unwrap_or(""),
             self.document.identity.source_sha,
+            disclosure,
             self.hash
         )
     }
@@ -313,6 +324,24 @@ pub fn read_plan(value: &Value, env: &Environment, directory: &Path) -> Result<P
         || document.files.len() >= 100
     {
         return Err("Public publication plan differs from this release");
+    }
+    let windows_self_signed = if let Some(raw) = env.get("BUILD_CONFIG") {
+        let config = crate::json::parse(raw.as_bytes())?;
+        match config
+            .as_object()
+            .ok_or("Invalid public build configuration")?
+            .get("OMNI_WINDOWS_SELF_SIGNED")
+        {
+            None => false,
+            Some(Value::String(value)) if value == "true" => true,
+            Some(Value::String(value)) if value == "false" => false,
+            Some(_) => return Err("Invalid OMNI_WINDOWS_SELF_SIGNED in build configuration"),
+        }
+    } else {
+        false
+    };
+    if document.windows_self_signed != windows_self_signed {
+        return Err("Windows signing disclosure differs from build configuration");
     }
     for (name, record) in &document.files {
         if !valid_name(name)
