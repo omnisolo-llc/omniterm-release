@@ -48,6 +48,12 @@ Authenticode-signed. The macOS release application is Developer ID signed and
 notarized before packaging. Apple delivery does not imply App Store approval or
 availability.
 
+When a release uses a self-signed Windows Authenticode certificate, its notes
+disclose that choice. Windows may show trust warnings because the certificate
+is not trusted by a public certificate authority. The Windows ZIP includes only
+the public DER certificate, `omniterm-windows-signing.cer`. Verify the download's
+detached OpenPGP signature using the reviewed release signing key before use.
+
 **The application downloads are not available until a full release build succeeds.**
 A relay-only release contains the relay kit, not the apps. A build-verification run
 never publishes files, and an unsigned verification APK is not a release download.
@@ -89,6 +95,15 @@ The protected `BUILD_CONFIG` secret must be a JSON object with
 `"OMNI_ENABLE_VPN":"true"`; all full-release evidence and artifact proofs bind
 the managed VPN contract and its provider-key fingerprint. Build-only verification
 does not publish and may omit that release setting.
+For explicitly selected self-signed Windows releases, set
+`"OMNI_WINDOWS_SELF_SIGNED":"true"` in `BUILD_CONFIG` and
+`"WINDOWS_SIGNING_MODE":"self-signed"` in `WINDOWS_SIGNING_CONFIG`. Independently
+pin `OMNI_WINDOWS_SIGNING_CERTIFICATE_SHA256` in `BUILD_CONFIG` to the lowercase
+SHA-256 of the public DER certificate. The self-signing flag accepts only the
+strings `"true"` and `"false"`, defaults to false when absent, and must agree with
+the native publication plan's optional `windows_self_signed` boolean. Self-signed
+release notes include Windows trust warnings and OpenPGP package verification;
+the certificate does not establish public CA trust.
 Full public builds do not need desktop tun2socks or Android Hev artifacts. Keep
 `OMNI_ENABLE_LEGACY_SOCKS_VPN` unset or `false`; the launcher rejects it for
 publishing requests. A separate non-publishing compatibility job may enable it
@@ -168,7 +183,7 @@ and package structure, not the complete source-quality or production signing gat
 Public launcher, encryption, and relay contracts also run on every push and pull request
 on Linux, Windows, and macOS without private credentials.
 
-Disable **build_only** only for an actual release with an approved source SHA and the original signing identities
+Disable **build_only** only for an actual release with an approved source SHA and the selected signing identities
 and production application configuration installed in the protected environments.
 Set **ios_action=upload** for App Store Connect delivery, or **submit** for review;
 a full release cannot skip Apple. Automatic store release remains an explicit opt-in.

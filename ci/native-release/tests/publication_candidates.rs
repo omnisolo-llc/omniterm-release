@@ -76,6 +76,136 @@ fn public_plan_binds_real_files_and_rejects_empty_changed_or_unsafe_inputs() {
 }
 
 #[test]
+fn public_plan_defaults_to_normal_notes_and_preserves_existing_plan_identity() {
+    let directory = canonical_tempdir();
+    let mut value = plan(directory.path());
+    let mut env = environment();
+    let legacy = publication_candidates::read_plan(&value, &env, directory.path()).unwrap();
+    assert_eq!(
+        legacy.notes(),
+        "Omniterm v1.2.3 (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa).\n<!-- native-publication:f6e8ca24bae85886c52aea348850d2bbfd6c0823f5480ceea71d239e3df1f1f5 -->"
+    );
+    env.insert("BUILD_CONFIG".into(), json!({}).to_string());
+    assert_eq!(
+        publication_candidates::read_plan(&value, &env, directory.path())
+            .unwrap()
+            .notes(),
+        legacy.notes()
+    );
+    value["windows_self_signed"] = json!(false);
+    env.insert(
+        "BUILD_CONFIG".into(),
+        json!({"OMNI_WINDOWS_SELF_SIGNED":"false"}).to_string(),
+    );
+    assert_eq!(
+        publication_candidates::read_plan(&value, &env, directory.path())
+            .unwrap()
+            .notes(),
+        legacy.notes()
+    );
+}
+
+#[test]
+fn public_plan_self_signed_notes_disclose_windows_trust_and_openpgp_verification() {
+    let directory = canonical_tempdir();
+    let mut value = plan(directory.path());
+    value["windows_self_signed"] = json!(true);
+    let mut env = environment();
+    env.insert(
+        "BUILD_CONFIG".into(),
+        json!({"OMNI_WINDOWS_SELF_SIGNED":"true"}).to_string(),
+    );
+    let checked = publication_candidates::read_plan(&value, &env, directory.path()).unwrap();
+    let notes = checked.notes();
+    assert!(notes.contains("self-signed Authenticode"));
+    assert!(notes.contains("Windows may show trust warnings"));
+    assert!(notes.contains("not trusted by a public certificate authority"));
+    assert!(notes.contains("detached OpenPGP package signatures"));
+    assert!(notes.contains("reviewed release signing key"));
+    assert!(notes.contains("omniterm-windows-signing.cer as a public DER certificate"));
+    assert!(notes.contains("no private key material is included"));
+    assert!(notes.starts_with(&format!("Omniterm v1.2.3 ({}).\n", "a".repeat(40))));
+    assert!(notes.ends_with(" -->"));
+    assert!(notes.contains("<!-- native-publication:"));
+}
+
+#[test]
+fn public_plan_self_signing_must_match_explicit_build_configuration() {
+    let directory = canonical_tempdir();
+    let mut value = plan(directory.path());
+    let mut env = environment();
+    env.insert(
+        "BUILD_CONFIG".into(),
+        json!({"OMNI_WINDOWS_SELF_SIGNED":"true"}).to_string(),
+    );
+    for declaration in [None, Some(false)] {
+        if let Some(declaration) = declaration {
+            value["windows_self_signed"] = json!(declaration);
+        }
+        assert_eq!(
+            publication_candidates::read_plan(&value, &env, directory.path()).err(),
+            Some("Windows signing disclosure differs from build configuration")
+        );
+    }
+    value["windows_self_signed"] = json!(true);
+    env.remove("BUILD_CONFIG");
+    assert_eq!(
+        publication_candidates::read_plan(&value, &env, directory.path()).err(),
+        Some("Windows signing disclosure differs from build configuration")
+    );
+    for config in [json!({}), json!({"OMNI_WINDOWS_SELF_SIGNED":"false"})] {
+        env.insert("BUILD_CONFIG".into(), config.to_string());
+        assert_eq!(
+            publication_candidates::read_plan(&value, &env, directory.path()).err(),
+            Some("Windows signing disclosure differs from build configuration")
+        );
+    }
+}
+
+#[test]
+fn public_plan_self_signing_requires_a_boolean_plan_field_and_string_build_flag() {
+    let directory = canonical_tempdir();
+    let value = plan(directory.path());
+    let mut env = environment();
+    for flag in [
+        json!(true),
+        json!(false),
+        json!(null),
+        json!(1),
+        json!("TRUE"),
+        json!("true "),
+        json!(""),
+        json!([]),
+        json!({}),
+    ] {
+        env.insert(
+            "BUILD_CONFIG".into(),
+            json!({"OMNI_WINDOWS_SELF_SIGNED":flag}).to_string(),
+        );
+        assert_eq!(
+            publication_candidates::read_plan(&value, &env, directory.path()).err(),
+            Some("Invalid OMNI_WINDOWS_SELF_SIGNED in build configuration")
+        );
+    }
+    for raw in ["", "[]", "null", "true", "\"true\"", "not-json"] {
+        env.insert("BUILD_CONFIG".into(), raw.into());
+        assert!(publication_candidates::read_plan(&value, &env, directory.path()).is_err());
+    }
+    env.insert(
+        "BUILD_CONFIG".into(),
+        json!({"OMNI_WINDOWS_SELF_SIGNED":"true"}).to_string(),
+    );
+    for declaration in [json!(null), json!("true"), json!(1), json!([]), json!({})] {
+        let mut invalid = value.clone();
+        invalid["windows_self_signed"] = declaration;
+        assert_eq!(
+            publication_candidates::read_plan(&invalid, &env, directory.path()).err(),
+            Some("Invalid public publication plan")
+        );
+    }
+}
+
+#[test]
 fn verification_scope_drops_publication_provider_and_checkout_credentials() {
     let mut env = environment();
     for key in [
