@@ -6,6 +6,11 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs, path::Path};
 
+fn canonical_tempdir() -> tempfile::TempDir {
+    let root = std::env::temp_dir().canonicalize().unwrap();
+    tempfile::tempdir_in(root).unwrap()
+}
+
 fn environment() -> Environment {
     Environment::from([
         ("GITHUB_ACTIONS".into(), "true".into()),
@@ -37,7 +42,7 @@ fn plan(directory: &Path) -> Value {
 
 #[test]
 fn public_plan_binds_real_files_and_rejects_empty_changed_or_unsafe_inputs() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_tempdir();
     let value = plan(directory.path());
     publication_candidates::read_plan(&value, &environment(), directory.path()).unwrap();
     let name = "omniterm-1.2.3-linux-x64.tar.gz";
@@ -109,10 +114,10 @@ fn verification_scope_drops_publication_provider_and_checkout_credentials() {
 
 #[test]
 fn symbolic_and_hardlinked_public_assets_are_rejected() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_tempdir();
     let value = plan(directory.path());
     let name = "omniterm-1.2.3-linux-x64.tar.gz";
-    let outside = tempfile::tempdir().unwrap();
+    let outside = canonical_tempdir();
     fs::rename(directory.path().join(name), outside.path().join(name)).unwrap();
     fs::hard_link(outside.path().join(name), directory.path().join(name)).unwrap();
     assert!(publication_candidates::read_plan(&value, &environment(), directory.path()).is_err());
@@ -128,7 +133,7 @@ fn symbolic_and_hardlinked_public_assets_are_rejected() {
 
 #[test]
 fn stored_verifier_and_plan_cannot_authorize_their_own_custody_hashes() {
-    let runner = tempfile::tempdir().unwrap();
+    let runner = canonical_tempdir();
     let root = runner.path().join(publication_candidates::DIRECTORY);
     fs::create_dir_all(root.join("files")).unwrap();
     let value = plan(&root.join("files"));
@@ -341,7 +346,7 @@ impl Drop for HttpFixture {
 
 #[test]
 fn existing_public_release_is_verified_by_download_and_never_overwritten() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_tempdir();
     let value = plan(directory.path());
     let checked =
         publication_candidates::read_plan(&value, &environment(), directory.path()).unwrap();
@@ -393,7 +398,7 @@ fn existing(plan: &publication_candidates::Plan, draft: bool) -> Value {
 
 #[test]
 fn ambiguous_create_failure_never_uploads_over_existing_release_bytes() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_tempdir();
     let value = plan(directory.path());
     let checked =
         publication_candidates::read_plan(&value, &environment(), directory.path()).unwrap();
@@ -420,7 +425,7 @@ fn ambiguous_create_failure_never_uploads_over_existing_release_bytes() {
 
 #[test]
 fn api_denial_does_not_look_like_absence_or_authorize_creation() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_tempdir();
     let value = plan(directory.path());
     let checked =
         publication_candidates::read_plan(&value, &environment(), directory.path()).unwrap();
@@ -436,7 +441,7 @@ fn api_denial_does_not_look_like_absence_or_authorize_creation() {
 #[test]
 fn changed_or_incomplete_published_assets_fail_without_mutation() {
     for tamper in [false, true] {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = canonical_tempdir();
         let value = plan(directory.path());
         let checked =
             publication_candidates::read_plan(&value, &environment(), directory.path()).unwrap();
@@ -469,7 +474,7 @@ fn changed_or_incomplete_published_assets_fail_without_mutation() {
 
 #[test]
 fn a_matching_draft_only_adds_missing_files_and_promotes_after_readback() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_tempdir();
     let value = plan(directory.path());
     let checked =
         publication_candidates::read_plan(&value, &environment(), directory.path()).unwrap();
@@ -546,7 +551,7 @@ fn a_matching_draft_only_adds_missing_files_and_promotes_after_readback() {
 #[test]
 fn an_unreviewed_asset_or_other_attempt_release_cannot_be_adopted() {
     for changed_body in [false, true] {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = canonical_tempdir();
         let value = plan(directory.path());
         let checked =
             publication_candidates::read_plan(&value, &environment(), directory.path()).unwrap();
@@ -585,7 +590,7 @@ fn an_unreviewed_asset_or_other_attempt_release_cannot_be_adopted() {
 #[test]
 fn a_current_proof_legacy_draft_binds_notes_only_after_every_asset_matches() {
     for tamper in [false, true] {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = canonical_tempdir();
         let mut value = plan(directory.path());
         // This HTTP test starts after native signature verification. The
         // private helper tests own genuine cryptographic provenance checks.
