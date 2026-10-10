@@ -15,12 +15,12 @@ pub fn build(src: &Path, env: &Environment, log: &mut fs::File) -> Result<String
         .canonicalize()
         .map_err(|_| "SDK runner directory invalid")?;
     let prefix = runner.join("windows-native-sdk");
-    if fs::symlink_metadata(&prefix).is_ok() {
-        return Err("Windows SDK artifact output must be fresh");
-    }
     let cache = runner.join("windows-native-sdk-source");
     let recipe = src.join("scripts/release/prepare-freerdp-windows.mjs");
     let safe = clean_environment(env);
+    let jobs = std::thread::available_parallelism()
+        .map(|n| n.get().to_string())
+        .unwrap_or_else(|_| "4".into());
     let arguments = vec![
         recipe.to_string_lossy().into_owned(),
         "--prefix".into(),
@@ -28,27 +28,43 @@ pub fn build(src: &Path, env: &Environment, log: &mut fs::File) -> Result<String
         "--cache".into(),
         cache.to_string_lossy().into_owned(),
         "--jobs".into(),
-        "2".into(),
+        jobs,
     ];
-    process::run(
-        Path::new("node"),
-        &arguments,
-        src,
-        &safe,
-        Duration::from_secs(3600),
-        Some(log),
-    )?;
-    let mut verification = arguments;
+    let mut verification = arguments.clone();
     verification.push("--verify-only".into());
-    process::run(
-        Path::new("node"),
-        &verification,
-        src,
-        &safe,
-        Duration::from_secs(300),
-        Some(log),
-    )?;
     let manifest = prefix.join("windows-sdk-source-manifest.json");
+    let cached_valid = manifest.is_file()
+        && process::run(
+            Path::new("node"),
+            &verification,
+            src,
+            &safe,
+            Duration::from_secs(300),
+            Some(log),
+        )
+        .is_ok();
+    if !cached_valid {
+        if fs::symlink_metadata(&prefix).is_ok() {
+            fs::remove_dir_all(&prefix)
+                .map_err(|_| "Windows SDK stale cache directory could not be cleared")?;
+        }
+        process::run(
+            Path::new("node"),
+            &arguments,
+            src,
+            &safe,
+            Duration::from_secs(3600),
+            Some(log),
+        )?;
+        process::run(
+            Path::new("node"),
+            &verification,
+            src,
+            &safe,
+            Duration::from_secs(300),
+            Some(log),
+        )?;
+    }
     let mut file = guards::open_regular(&manifest, 8 * 1024 * 1024)?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)

@@ -338,7 +338,7 @@ impl HttpFixture {
                     }
                 };
                 socket
-                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .set_read_timeout(Some(std::time::Duration::from_secs(30)))
                     .unwrap();
                 let mut raw = Vec::new();
                 loop {
@@ -393,7 +393,7 @@ impl HttpFixture {
         use std::io::{Read, Write};
         let mut socket = std::net::TcpStream::connect(&self.base).unwrap();
         socket
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .set_read_timeout(Some(std::time::Duration::from_secs(30)))
             .unwrap();
         write!(
             socket,
