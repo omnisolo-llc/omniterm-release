@@ -363,6 +363,22 @@ pub fn reviewed_public_candidate_exchange(
     }
 }
 
+pub fn reviewed_windows_sdk_cache(
+    workflow: &str,
+    job: &str,
+    definition: &Value,
+    step: &Value,
+) -> bool {
+    workflow == "release.yml"
+        && job == "windows_sdk"
+        && definition["environment"] == "downloads"
+        && definition["permissions"] == json!({"contents": "read"})
+        && step["id"] == "sdk_cache"
+        && step["uses"] == "actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830"
+        && step["with"]["key"]
+            == "windows-native-sdk-v1-${{ runner.os }}-${{ needs.resolve.outputs.source_sha }}"
+}
+
 fn identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
@@ -658,6 +674,12 @@ impl Audit {
             {
                 self.public_candidate_exchanges
                     .insert((workflow.into(), job.into(), kind));
+                return;
+            }
+            if direct
+                && self.action_active.is_empty()
+                && reviewed_windows_sdk_cache(workflow, job, definition, step)
+            {
                 return;
             }
             self.finding(workflow, job, "actions_storage_forbidden");

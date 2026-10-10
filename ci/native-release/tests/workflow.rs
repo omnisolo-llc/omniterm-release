@@ -983,7 +983,13 @@ fn all_release_evidence_is_encrypted_and_retained_through_selected_private_stora
                     candidate_exchanges.insert((name.as_str().unwrap(), kind));
                 }
                 assert!(
-                    !action.starts_with("actions/cache"),
+                    !action.starts_with("actions/cache")
+                        || omni_release_launcher::runner_policy::reviewed_windows_sdk_cache(
+                            "release.yml",
+                            name.as_str().unwrap(),
+                            &definition,
+                            &serde_json::to_value(step).unwrap(),
+                        ),
                     "{name:?}: forbidden Actions storage"
                 );
             }
