@@ -240,7 +240,7 @@ impl Frozen {
                 } else if m.is_file() {
                     files += 1;
                     total += m.len();
-                    if files > 512 || m.len() > 4 * 1024 * 1024 || total > 16 * 1024 * 1024 {
+                    if files > 1024 || m.len() > 4 * 1024 * 1024 || total > 16 * 1024 * 1024 {
                         return Err("Reviewed file bound exceeded");
                     }
                     paths.push(path);

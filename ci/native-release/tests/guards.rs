@@ -30,7 +30,7 @@ fn reviewed_tree_is_frozen_by_handle_restored_and_bounded() {
     fs::write(&path, vec![0; 4 * 1024 * 1024 + 1]).unwrap();
     assert!(Frozen::tree(&root, false).is_err());
     fs::remove_file(&path).unwrap();
-    for n in 0..513 {
+    for n in 0..1025 {
         fs::write(root.join(format!("file{n}")), b"").unwrap();
     }
     assert!(Frozen::tree(&root, false).is_err());

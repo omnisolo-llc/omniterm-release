@@ -281,7 +281,7 @@ pub fn verify_tools(root: &Path, env: &Environment) -> Result<()> {
             }
         } else if info.is_file() {
             actual.insert(relative);
-            if actual.len() > 512 {
+            if actual.len() > 1024 {
                 return Err("Native tool inventory exceeds bound");
             }
         } else {
